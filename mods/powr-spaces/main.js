@@ -765,12 +765,31 @@ export default class PowrSpaces extends View {
 		return h_flex().flex_wrap().gap(3).children(names.map(tile));
 	}
 
+	/** The project a branch belongs to, or null when this is not a branch. */
+	projectOf(space) {
+		const cwd = this.cwdOf(space);
+		const info = cwd ? this.repos[cwd] : null;
+		if (!info || !info.linked) return null;
+		return spaces().find((other) => {
+			const theirs = this.cwdOf(other) ? this.repos[this.cwdOf(other)] : null;
+			return theirs && !theirs.linked && theirs.repo === info.repo;
+		}) ?? null;
+	}
+
 	spaceControls(t, space) {
 		const stored = shared(HERDR_COLORS);
 		const color = (stored && typeof stored === "object" ? stored[space.id] : null) ?? null;
+		// A branch takes its project's colour, so offering it a colour of its
+		// own would be offering something that does nothing. It says where the
+		// colour comes from instead, which is the answer to the question
+		// anyone opening this was about to ask.
+		const project = this.projectOf(space);
 		return this.box(t, space.name, [
-			this.swatches(t, { key: `sp-${space.id}`, color },
-				(pick, cx) => this.paintSpace(space.id, pick, cx)),
+			project
+				? div().text_size(11).text_color(t.dim)
+					.child(`colour comes from ${project.name}`)
+				: this.swatches(t, { key: `sp-${space.id}`, color },
+					(pick, cx) => this.paintSpace(space.id, pick, cx)),
 			this.glyphs(t, {
 				key: `sp-${space.id}`,
 				names: SPACE_ICONS,
