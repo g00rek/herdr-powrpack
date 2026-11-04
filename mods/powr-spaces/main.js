@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, focused, theme, run, shared, setShared, openOverlay, closeOverlay,
-	exec, props, readTextFile, writeTextFile, home } from "herdr";
+	exec, props, readTextFile, writeTextFile, home, appHome } from "herdr";
 
 // The list of projects, drawn by us rather than by Herdr, so that things
 // Herdr knows nothing about can appear on a project's own row. The first of
@@ -34,25 +34,50 @@ const HUES = Object.keys(MARK);
 // the mark on the flap, which is the part that says which folder it is.
 // Lucide, shipped in this mod's own icons folder with the ISC licence.
 const ICONS = [
-	"folder", "folder-code", "folder-git", "folder-git-2", "folder-kanban",
-	"folder-tree", "folder-archive", "folder-bookmark", "folder-check",
-	"folder-clock", "folder-cog", "folder-heart", "folder-key",
-	"folder-lock", "folder-pen", "folder-search", "folder-user",
-	"folder-users",
+	"folder", "folder-archive", "folder-bookmark", "folder-check",
+	"folder-clock", "folder-closed", "folder-code", "folder-cog",
+	"folder-dot", "folder-down", "folder-git", "folder-git-2",
+	"folder-heart", "folder-input", "folder-kanban", "folder-key",
+	"folder-lock", "folder-minus", "folder-open", "folder-open-dot",
+	"folder-output", "folder-pen", "folder-plus", "folder-root",
+	"folder-search", "folder-search-2", "folder-symlink", "folder-sync",
+	"folder-tree", "folder-up", "folder-user", "folder-users", "folder-x",
+	"folders",
 ];
 
 // What a project can wear instead of its initial. A project is anything, so
-// these are not all one shape the way the folder glyphs are.
+// these are not all one shape the way the folder glyphs are. These are what
+// the menu shows before anything is typed; typing searches all of Lucide,
+// by name and by the words Lucide files each icon under.
 // How many glyphs fit across a popup 264 wide: 26 each and 3 between.
 const GLYPHS_PER_ROW = 8;
+// The project icon grid scrolls inside this much: six rows.
+const GRID_HEIGHT = 6 * 29;
+
+// Every Lucide icon shipped here, as [name, the words it is filed under].
+const ICON_INDEX = `${appHome()}/mods/powr-spaces/icons/index.json`;
+// How many matches a search shows. More than this is a word too short to
+// mean anything yet, and drawing two thousand at once is not free.
+const MATCHES = 120;
 
 const SPACE_ICONS = [
-	"code", "braces", "terminal", "rocket", "bug", "database", "server",
-	"shield", "globe", "cloud", "cpu", "smartphone", "monitor", "gamepad-2",
-	"camera", "film", "palette", "pen-tool", "feather", "book",
-	"graduation-cap", "banknote", "chart-column", "briefcase", "mail",
-	"phone", "users", "heart", "flask-conical", "brain", "microscope",
-	"leaf", "flame", "zap", "wrench", "package", "bot", "map-pin", "calendar",
+	"code", "braces", "terminal", "square-terminal", "rocket", "bug",
+	"database", "server", "shield", "globe", "cloud", "cpu", "smartphone",
+	"monitor", "laptop", "tablet", "gamepad-2", "joystick", "camera",
+	"film", "clapperboard", "video", "headphones", "mic", "palette",
+	"pen-tool", "brush", "feather", "book", "book-open", "notebook-pen",
+	"graduation-cap", "school", "banknote", "wallet", "coins",
+	"piggy-bank", "chart-column", "chart-line", "chart-pie", "trending-up",
+	"briefcase", "store", "shopping-cart", "mail", "message-circle",
+	"phone", "users", "user", "heart", "star", "sparkles", "flask-conical",
+	"atom", "brain", "microscope", "dna", "leaf", "tree-pine", "flower-2",
+	"sun", "moon", "flame", "zap", "wrench", "hammer", "cog", "package",
+	"box", "truck", "plane", "car", "bike", "ship", "bot", "cat", "dog",
+	"bird", "fish", "rabbit", "paw-print", "map-pin", "map", "compass",
+	"calendar", "clock", "timer", "bell", "lock", "key", "tent",
+	"mountain", "coffee", "utensils", "pizza", "apple", "gift", "trophy",
+	"medal", "target", "puzzle", "dice-5", "ghost", "skull", "crown",
+	"lightbulb", "newspaper", "scroll",
 ];
 
 // Ours, because Herdr has nowhere to put it. Colours are Herdr's own, so
@@ -122,6 +147,20 @@ export default class PowrSpaces extends View {
 		}
 		this.role = props()?.role ?? null;
 		if (this.role === "look") {
+			this.query = "";
+			this.index = [];
+			this.search = InputState.new({ placeholder: "Search all icons" });
+			this.search.on("change", (_event, cx) => {
+				this.query = this.search.value().trim().toLowerCase();
+				cx.notify();
+			});
+			this.search.focus();
+			cx.spawn(async (cx) => {
+				try {
+					this.index = JSON.parse(await readTextFile(ICON_INDEX));
+				} catch {}
+				cx.notify();
+			});
 			cx.notify();
 			return;
 		}
@@ -770,7 +809,7 @@ export default class PowrSpaces extends View {
 				const rows = Math.ceil(ICONS.length / GLYPHS_PER_ROW);
 				openOverlay({
 					mod: "powr-spaces", kind: "popup", width: 264,
-					height: 30 + 36 + 36 + rows * 29 + 10 + 36,
+					height: 30 + 36 + 36 + Math.min(rows * 29, GRID_HEIGHT) + 10 + 36,
 					props: { role: "folder", id: folder.id },
 				});
 			})
@@ -829,10 +868,9 @@ export default class PowrSpaces extends View {
 	 * it was about.
 	 */
 	openLook(id, from) {
-		const rows = Math.ceil(SPACE_ICONS.length / GLYPHS_PER_ROW);
 		openOverlay({
 			mod: "powr-spaces", kind: "popup", width: 264,
-			height: 30 + (from ? 26 : 36) + rows * 29 + 10 + 36,
+			height: 30 + (from ? 26 : 36) + 36 + GRID_HEIGHT + 14,
 			props: { role: "look", id, from },
 		});
 	}
@@ -862,7 +900,7 @@ export default class PowrSpaces extends View {
 	}
 
 	/** The glyphs, as a wrapped grid. `plain` is the one that means none. */
-	glyphs(t, { key, names, chosen, plain, pick, tint }) {
+	glyphs(t, { key, names, chosen, plain, pick, tint, scroll, letter }) {
 		const tile = (name) =>
 			h_flex()
 				.id(`powr-glyph-${key}-${name}`)
@@ -875,7 +913,39 @@ export default class PowrSpaces extends View {
 				.on_click((_event, cx) => pick(name === plain ? null : name, cx))
 				.child(svg(`mods/powr-spaces/icons/${name}.svg`).size(14)
 					.text_color((chosen ?? plain) === name ? t.accent : tint));
-		return h_flex().flex_wrap().gap(3).px(6).pb(2).children(names.map(tile));
+		// A project's own letter is the first choice: what it wears with no
+		// icon at all, picked the same way as any icon.
+		const own = letter && h_flex()
+			.id(`powr-glyph-${key}-letter`)
+			.size(26).flex_none().rounded(6)
+			.items_center().justify_center()
+			.cursor_pointer()
+			.when(!chosen, (el) => el.bg(t.selected))
+			.hover((s) => s.bg(t.hover))
+			.on_click((_event, cx) => pick(null, cx))
+			.child(div().text_size(12).text_color(!chosen ? t.accent : tint).child(letter));
+		const grid = h_flex().flex_wrap().gap(3).px(6).pb(2)
+			.when(Boolean(own), (el) => el.child(own))
+			.children(names.map(tile));
+		if (!scroll) return grid;
+		return v_flex().id(`powr-glyphs-${key}`).h(scroll).overflow_y_scrollbar().child(grid);
+	}
+
+	/**
+	 * Icons matching what was typed: names that start with it first, then
+	 * names that contain it, then icons Lucide files under a word starting
+	 * with it — "music" finds the notes and the headphones, not only icons
+	 * with music in their name.
+	 */
+	matches(query) {
+		const starts = [], within = [], tagged = [];
+		for (const [name, words] of this.index) {
+			if (name.startsWith(query)) starts.push(name);
+			else if (name.includes(query)) within.push(name);
+			else if (` ${words}`.includes(` ${query}`)) tagged.push(name);
+			if (starts.length >= MATCHES) break;
+		}
+		return [...starts, ...within, ...tagged].slice(0, MATCHES);
 	}
 
 	spaceControls(t, space) {
@@ -892,17 +962,21 @@ export default class PowrSpaces extends View {
 					.child(`colour comes from ${from}`)
 				: this.swatches(t, { key: `sp-${space.id}`, color },
 					(pick, cx) => this.paintSpace(space.id, pick, cx)),
-			this.glyphs(t, {
+			h_flex().h(28).mx(4).px(6).items_center().rounded(6)
+				.border_1().border_color(t.border)
+				.child(Input.new(this.search).h_full().text_size(12).text_color(t.foreground)),
+			this.query && !this.matches(this.query).length
+				? div().px(8).py(6).text_size(11).text_color(t.dim).child("nothing by that name")
+				: this.glyphs(t, {
 				key: `sp-${space.id}`,
-				names: SPACE_ICONS,
+				scroll: GRID_HEIGHT,
+				names: this.query ? this.matches(this.query) : SPACE_ICONS,
 				chosen: this.iconOf(space),
 				plain: null,
+				letter: (space.name || "?").trim().charAt(0).toUpperCase() || "?",
 				tint: t.foreground,
 				pick: (name, cx) => this.wearSpaceIcon(space.id, name, cx),
 			}),
-			div().h(1).mx(6).my(2).bg(t.border),
-			this.item(t, `powr-sp-plain-${space.id}`, "Show its letter instead",
-				(_event, cx) => this.wearSpaceIcon(space.id, null, cx)),
 		]);
 	}
 
@@ -920,6 +994,7 @@ export default class PowrSpaces extends View {
 			this.glyphs(t, {
 				key: `f-${folder.id}`,
 				names: ICONS,
+				scroll: Math.min(Math.ceil(ICONS.length / GLYPHS_PER_ROW) * 29, GRID_HEIGHT),
 				chosen: folder.icon ?? null,
 				plain: "folder",
 				tint: t.foreground,
