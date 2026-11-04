@@ -538,13 +538,15 @@ export default class PowrSpaces extends View {
 			// Herdr's own menu, not one of ours: renaming, closing and the rest
 			// are its business, and a second menu that did the same things
 			// differently would be a worse list, not a better one.
-			// Our own controls, with the colour and the glyph in them, and
-			// "more…" for everything else a project can have done to it.
+			// Herdr's own menu, untouched. Rename, close, worktrees and the
+			// rest are its business; ours is the tile, and that is what you
+			// press to get at ours.
 			.on_mouse_down("right", (_event, cx) => {
 				cx.stop_propagation();
-				this.spaceMenu = this.spaceMenu === space.id ? null : space.id;
-				this.menu = null;
-				cx.notify();
+				openOverlay({
+					mod: "menu", kind: "popup", width: 200, height: 260,
+					props: { tab: "space", target: { id: space.id } },
+				});
 			})
 			.when(this.spaceMenu === space.id, (el) =>
 				el.on_mouse_down("left", (_event, cx) => cx.stop_propagation()))
@@ -554,11 +556,21 @@ export default class PowrSpaces extends View {
 			// project, without either of them having to shrink or move.
 			.child(
 				h_flex()
+					.id(`powr-tile-${space.id}`)
 					.size(18)
 					.flex_none()
 					.rounded(5)
 					.items_center()
 					.justify_center()
+					.cursor_pointer()
+					.tooltip("Colour and glyph")
+					.on_mouse_down("left", (_event, cx) => cx.stop_propagation())
+					.on_click((_event, cx) => {
+						cx.stop_propagation();
+						this.spaceMenu = this.spaceMenu === space.id ? null : space.id;
+						this.menu = null;
+						cx.notify();
+					})
 					.when(!from, (el) => el.bg(this.colorOf(space, null)))
 					.when(Boolean(from), (el) =>
 						el.border_1().border_color(this.colorOf(space, from)))
@@ -689,7 +701,18 @@ export default class PowrSpaces extends View {
 				// No tile under it. The glyph is already a folder, so a filled
 			// square behind it only competes with the projects' own tiles,
 			// which are the thing that is supposed to be read first.
-			h_flex().size(18).flex_none().items_center().justify_center()
+			h_flex()
+					.id(`powr-folder-tile-${folder.id}`)
+					.size(18).flex_none().items_center().justify_center()
+					.cursor_pointer()
+					.tooltip("Colour and glyph")
+					.on_mouse_down("left", (_event, cx) => cx.stop_propagation())
+					.on_click((_event, cx) => {
+						cx.stop_propagation();
+						this.menu = this.menu === folder.id ? null : folder.id;
+						this.spaceMenu = null;
+						cx.notify();
+					})
 					.child(svg(folder.icon
 						? `mods/powr-spaces/icons/${folder.icon}.svg`
 						: "mods/powr-spaces/folder.svg").size(15).text_color(tint))
@@ -835,17 +858,6 @@ export default class PowrSpaces extends View {
 			div().h(1).mx(6).my(2).bg(t.border),
 			this.item(t, `powr-sp-plain-${space.id}`, "Show its letter instead",
 				(_event, cx) => this.wearSpaceIcon(space.id, null, cx)),
-			// Everything else a project can have done to it stays where it has
-			// always been. Rebuilding Herdr's menu worse is not an improvement,
-			// and it is one press away.
-			this.item(t, `powr-sp-more-${space.id}`, "More\u2026", (_event, cx) => {
-				this.spaceMenu = null;
-				cx.notify();
-				openOverlay({
-					mod: "menu", kind: "popup", width: 200, height: 260,
-					props: { tab: "space", target: { id: space.id } },
-				});
-			}),
 		]);
 	}
 
