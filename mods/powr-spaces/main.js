@@ -478,9 +478,19 @@ export default class PowrSpaces extends View {
 			.hover((s) => s.bg(t.hover))
 			.on_mouse_move((_event, cx) => this.hover("folder", folder.id, cx))
 			.on_mouse_up("left", (_event, cx) => this.drop(cx))
+			// Kept from the panel below, which closes its controls on any
+			// press outside them: a press on this row is a press on their own
+			// header, and it should put them away rather than fold the folder.
+			.when(this.menu === folder.id, (el) =>
+				el.on_mouse_down("left", (_event, cx) => cx.stop_propagation()))
 			.on_click((_event, cx) => {
 				if (this.dropped) {
 					this.dropped = false;
+					return;
+				}
+				if (this.menu === folder.id) {
+					this.menu = null;
+					cx.notify();
 					return;
 				}
 				this.toggleFolder(folder.id, cx);
@@ -589,6 +599,10 @@ export default class PowrSpaces extends View {
 			)
 			.child(
 				h_flex().items_center().gap(4)
+					.child(word("done", "done", (_event, cx) => {
+						this.menu = null;
+						cx.notify();
+					}))
 					.child(div().flex_1())
 					.child(word("rename", "rename", (_event, cx) => {
 						this.editing = folder.id;
@@ -677,6 +691,14 @@ export default class PowrSpaces extends View {
 			// project stuck to the pointer.
 			.on_mouse_up("left", (_event, cx) => {
 				if (this.pressed) this.drop(cx);
+			})
+			// A press anywhere but inside a folder's own controls closes them.
+			// They had no way out at all: right-clicking the folder again was
+			// the only one, and nothing on screen said so.
+			.on_mouse_down("left", (_event, cx) => {
+				if (this.menu === null) return;
+				this.menu = null;
+				cx.notify();
 			})
 			.child(
 				h_flex().px(14).items_center().gap(4)
