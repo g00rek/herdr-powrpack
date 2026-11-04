@@ -59,8 +59,12 @@ const SPACE_ICON_OF = "powr.space-icons";
 const FOLDERS = "powr.folders";
 const HERDR_FOLDERS = "space-folders";
 
-// Which projects have no browser: Browsr's own setting, shared with its
-// panel so the two can never disagree.
+// Which projects have a browser: Browsr's own setting, shared with its panel
+// so the two can never disagree. A project is in here only if someone said
+// so — a new project, and a new worktree, starts without one.
+const ON = "browsr.on";
+// How it used to be: everything had one unless it was turned off. Read once,
+// to carry the choices already made over to the list the other way round.
 const SKIP = "browsr.skip";
 
 // Where Browsr leaves a question and reads the answer. A file, because the
@@ -106,6 +110,7 @@ export default class PowrSpaces extends View {
 			cx.notify();
 			return;
 		}
+		this.seedBrowsers();
 		this.answered = null; // the id of the last question dealt with
 		cx.timer.every(ASK_EVERY, (cx) => this.pickUpQuestion(cx));
 		this.seedFolders();
@@ -160,9 +165,7 @@ export default class PowrSpaces extends View {
 	answer(yes, cx) {
 		const asked = this.ask;
 		if (yes) {
-			const chosen = { ...this.skipped() };
-			delete chosen[asked.space];
-			setShared(SKIP, chosen);
+			setShared(ON, { ...this.browsers(), [asked.space]: true });
 		}
 		cx.spawn(async () => {
 			try {
@@ -332,9 +335,26 @@ export default class PowrSpaces extends View {
 		setShared(FOLDERS, { list: next.list, of: next.of });
 	}
 
-	skipped() {
-		const chosen = shared(SKIP);
+	/** The projects that have a browser, as { [id]: true }. */
+	browsers() {
+		const chosen = shared(ON);
 		return chosen && typeof chosen === "object" ? chosen : {};
+	}
+
+	/**
+	 * Carry the old list over, once.
+	 *
+	 * It said which projects were turned *off*, so reading it as the new one
+	 * would take the browser away from everything at the same moment.
+	 */
+	seedBrowsers() {
+		if (shared(ON)) return;
+		const off = shared(SKIP);
+		const map = {};
+		for (const space of spaces()) {
+			if (!(off && typeof off === "object" && off[space.id])) map[space.id] = true;
+		}
+		setShared(ON, map);
 	}
 
 	/**
@@ -487,18 +507,18 @@ export default class PowrSpaces extends View {
 
 	// ---- browser ------------------------------------------------------
 
-	/** Give a project a browser, or take it away, and let Browsr catch up. */
+	/** Give a project a browser, or take it away. */
 	toggleBrowser(space) {
-		const chosen = { ...this.skipped() };
+		const chosen = { ...this.browsers() };
 		if (chosen[space]) delete chosen[space];
 		else chosen[space] = true;
-		setShared(SKIP, chosen);
+		setShared(ON, chosen);
 	}
 
 	// ---- drawing ------------------------------------------------------
 
 	row(t, space, inFront, mark, from) {
-		const on = !this.skipped()[space.id];
+		const on = this.browsers()[space.id] === true;
 		const letter = (space.name || "?").trim().charAt(0).toUpperCase() || "?";
 		const icon = this.iconOf(space);
 		const landing = this.over && this.over.kind === "space" && this.over.id === space.id;
@@ -942,7 +962,8 @@ export default class PowrSpaces extends View {
 			? this.folderControls(t, folderOpen)
 			: (spaceOpen ? this.spaceControls(t, spaceOpen) : null);
 
-		const off = all.filter((space) => this.skipped()[space.id]).length;
+		const chosen = this.browsers();
+		const off = all.filter((space) => chosen[space.id] !== true).length;
 		const button = (id, label, hint, handler) =>
 			div()
 				.id(id)
