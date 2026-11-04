@@ -654,10 +654,13 @@ export default class PowrSpaces extends View {
 				cx.notify();
 			})
 			.child(
-				h_flex().size(18).flex_none().rounded(5).items_center().justify_center().bg(tint)
+				// No tile under it. The glyph is already a folder, so a filled
+			// square behind it only competes with the projects' own tiles,
+			// which are the thing that is supposed to be read first.
+			h_flex().size(18).flex_none().items_center().justify_center()
 					.child(svg(folder.icon
 						? `mods/powr-spaces/icons/${folder.icon}.svg`
-						: "mods/powr-spaces/folder.svg").size(12).text_color("#ffffff"))
+						: "mods/powr-spaces/folder.svg").size(15).text_color(tint))
 			);
 
 		if (this.editing === folder.id) {
