@@ -283,26 +283,25 @@ export default class PowrSpaces extends View {
 			const cwd = this.cwdOf(space);
 			return (cwd ? this.repos[cwd] : null) ?? null;
 		};
+		const drawn = new Set();
 		for (const space of list) {
 			const info = git(space);
 			if (info && info.linked) continue; // drawn under its own project
-			out.push({ space, mark: null, from: null });
-			if (!info || done.has(info.repo)) continue;
-			done.add(info.repo);
-			const kids = list.filter((other) => {
-				const theirs = git(other);
-				return theirs && theirs.linked && theirs.repo === info.repo;
-			});
-			kids.forEach((kid, n) => out.push({
-				space: kid,
-				mark: n === kids.length - 1 ? "└" : "├",
-				from: space,
-			}));
+			const kids = info && !done.has(info.repo)
+				? list.filter((other) => {
+					const theirs = git(other);
+					return theirs && theirs.linked && theirs.repo === info.repo;
+				})
+				: [];
+			if (info) done.add(info.repo);
+			out.push({ space, kids });
+			drawn.add(space.id);
+			for (const kid of kids) drawn.add(kid.id);
 		}
 		// A worktree whose own project is not in this list would vanish.
 		for (const space of list) {
-			if (out.some((row) => row.space.id === space.id)) continue;
-			out.push({ space, mark: null, from: null });
+			if (drawn.has(space.id)) continue;
+			out.push({ space, kids: [] });
 		}
 		return out;
 	}
@@ -549,10 +548,6 @@ export default class PowrSpaces extends View {
 			})
 			.when(this.spaceMenu === space.id, (el) =>
 				el.on_mouse_down("left", (_event, cx) => cx.stop_propagation()))
-			// The elbow that says this is a branch checked out beside the
-			// project above it, not a project of its own.
-			.when(Boolean(mark), (el) =>
-				el.child(div().flex_none().w(10).text_size(11).text_color(t.border).child(mark)))
 			// A project's tile is filled; a branch beside it gets the same
 			// tile drawn as an outline. Same shape and same colour say they
 			// belong together; filled against hollow says which one is the
@@ -610,6 +605,30 @@ export default class PowrSpaces extends View {
 					.child(svg("mods/powr-spaces/browser.svg").size(13)
 						.text_color(on ? t.foreground : t.border))
 			);
+	}
+
+	/**
+	 * A project and the branches checked out beside it, as one group.
+	 *
+	 * Drawn as a line down the side rather than an elbow character per row.
+	 * The characters sat in the gaps between rows and never joined up, so at
+	 * this size the structure was barely there; a rule in the family's own
+	 * colour says it in one stroke.
+	 */
+	group(t, { space, kids }, here, indent) {
+		const block = v_flex().gap(1).child(this.row(t, space, space.id === here, null));
+		if (!kids.length) return block;
+		const line = this.colorOf(space, null);
+		const nest = v_flex().gap(1).ml(indent + 8).pl(9).border_l_1().border_color(line);
+		for (const kid of kids) {
+			nest.child(
+				h_flex().items_center()
+					.child(div().flex_none().w(7).h(1).bg(line))
+					.child(div().flex_1().min_w(0)
+						.child(this.row(t, kid, kid.id === here, null, space)))
+			);
+		}
+		return block.child(nest);
 	}
 
 	folderHead(t, folder, inside) {
@@ -850,9 +869,8 @@ export default class PowrSpaces extends View {
 			const inside = all.filter((space) => of[space.id] === folder.id);
 			body.child(this.folderHead(t, folder, inside));
 			if (folder.folded) continue;
-			for (const row of this.tree(inside)) {
-				body.child(div().pl(14).child(
-					this.row(t, row.space, row.space.id === here, row.mark, row.from)));
+			for (const node of this.tree(inside)) {
+				body.child(div().pl(14).child(this.group(t, node, here, 0)));
 			}
 		}
 
@@ -879,8 +897,8 @@ export default class PowrSpaces extends View {
 			);
 		}
 
-		for (const row of this.tree(all.filter((space) => !inFolder(space.id)))) {
-			body.child(this.row(t, row.space, row.space.id === here, row.mark, row.from));
+		for (const node of this.tree(all.filter((space) => !inFolder(space.id)))) {
+			body.child(this.group(t, node, here, 0));
 		}
 
 		const folderOpen = list.find((f) => f.id === this.menu);
