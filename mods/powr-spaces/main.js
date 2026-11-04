@@ -561,10 +561,20 @@ export default class PowrSpaces extends View {
 					this.wearIcon(folder.id, name === "folder" ? null : name, cx))
 				.child(svg(`mods/powr-spaces/icons/${name}.svg`).size(14)
 					.text_color((folder.icon ?? "folder") === name ? t.accent : t.foreground));
+		// Drawn as a box, not as more list. Without an edge of its own it
+		// read as part of the list underneath, and "done rename delete"
+		// looked like a heading over the projects below rather than the
+		// three things you can do to this folder.
 		return v_flex()
-			.gap(5)
-			.px(8)
-			.py(5)
+			.gap(6)
+			.mx(2)
+			.mt(2)
+			.mb(4)
+			.p(8)
+			.rounded(8)
+			.bg(t.popover)
+			.border_1()
+			.border_color(t.border)
 			.on_mouse_down("left", (_event, cx) => cx.stop_propagation())
 			.child(h_flex().gap(5).items_center()
 				.child(swatch(null))
@@ -573,12 +583,12 @@ export default class PowrSpaces extends View {
 				h_flex().flex_wrap().gap(3).children(ICONS.map(tile))
 			)
 			.child(
-				h_flex().items_center().gap(4)
-					.child(word("done", "done", (_event, cx) => {
-						this.menu = null;
-						cx.notify();
-					}))
-					.child(div().flex_1())
+				// On their own line, under a rule, so that three words in a
+				// row cannot be mistaken for column headings.
+				h_flex().items_center().justify_end().gap(4)
+					.pt(6)
+					.border_t_1()
+					.border_color(t.border)
 					.child(word("rename", "rename", (_event, cx) => {
 						this.editing = folder.id;
 						this.menu = null;
@@ -587,6 +597,22 @@ export default class PowrSpaces extends View {
 						cx.notify();
 					}))
 					.child(word("delete", "delete", (_event, cx) => this.deleteFolder(folder.id, cx)))
+					.child(div().w(6))
+					.child(
+						div()
+							.id(`powr-folder-done-${folder.id}`)
+							.px(8).py(2).rounded(5)
+							.bg(t.surface)
+							.cursor_pointer()
+							.text_size(11)
+							.text_color(t.foreground)
+							.hover((s) => s.bg(t.hover))
+							.on_click((_event, cx) => {
+								this.menu = null;
+								cx.notify();
+							})
+							.child("done")
+					)
 			);
 	}
 
