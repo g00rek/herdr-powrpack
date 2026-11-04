@@ -595,7 +595,7 @@ export default class PowrSpaces extends View {
 	}
 
 	/** The box itself: the same frame for a folder and for a project. */
-	box(t, rows) {
+	box(t, title, rows) {
 		// Drawn as a box, not as more list. Without an edge of its own it
 		// read as part of the list underneath, and the words at the bottom
 		// looked like headings over the projects below.
@@ -605,7 +605,10 @@ export default class PowrSpaces extends View {
 			.bg(t.popover)
 			.border_1()
 			.border_color(t.border)
-			.on_mouse_down("left", (_event, cx) => cx.stop_propagation());
+			.on_mouse_down("left", (_event, cx) => cx.stop_propagation())
+			.on_mouse_down("right", (_event, cx) => cx.stop_propagation())
+			// It stands away from the row it belongs to, so it says whose it is.
+			.child(div().text_size(11).text_color(t.dim).truncate().child(title));
 		for (const row of rows) panel.child(row);
 		return panel;
 	}
@@ -646,7 +649,7 @@ export default class PowrSpaces extends View {
 	spaceControls(t, space) {
 		const stored = shared(HERDR_COLORS);
 		const color = (stored && typeof stored === "object" ? stored[space.id] : null) ?? null;
-		return this.box(t, [
+		return this.box(t, space.name, [
 			this.swatches(t, { key: `sp-${space.id}`, color },
 				(pick, cx) => this.paintSpace(space.id, pick, cx)),
 			this.glyphs(t, {
@@ -690,7 +693,7 @@ export default class PowrSpaces extends View {
 	}
 
 	folderControls(t, folder) {
-		return this.box(t, [
+		return this.box(t, folder.name, [
 			this.swatches(t, { key: `f-${folder.id}`, color: folder.color ?? null },
 				(pick, cx) => this.paintFolder(folder.id, pick, cx)),
 			this.glyphs(t, {
@@ -745,12 +748,10 @@ export default class PowrSpaces extends View {
 		for (const folder of list) {
 			const inside = all.filter((space) => of[space.id] === folder.id);
 			body.child(this.folderHead(t, folder, inside));
-			if (this.menu === folder.id) body.child(this.folderControls(t, folder));
 			if (folder.folded) continue;
 			for (const row of this.tree(inside)) {
 				body.child(div().pl(14).child(
 					this.row(t, row.space, row.space.id === here, row.mark, row.from)));
-				if (this.spaceMenu === row.space.id) body.child(this.spaceControls(t, row.space));
 			}
 		}
 
@@ -779,8 +780,13 @@ export default class PowrSpaces extends View {
 
 		for (const row of this.tree(all.filter((space) => !inFolder(space.id)))) {
 			body.child(this.row(t, row.space, row.space.id === here, row.mark, row.from));
-			if (this.spaceMenu === row.space.id) body.child(this.spaceControls(t, row.space));
 		}
+
+		const folderOpen = list.find((f) => f.id === this.menu);
+		const spaceOpen = this.spaceMenu ? all.find((s) => s.id === this.spaceMenu) : null;
+		const open = folderOpen
+			? this.folderControls(t, folderOpen)
+			: (spaceOpen ? this.spaceControls(t, spaceOpen) : null);
 
 		const off = all.filter((space) => this.skipped()[space.id]).length;
 		const button = (id, label, hint, handler) =>
@@ -838,6 +844,12 @@ export default class PowrSpaces extends View {
 						(_event, cx) => this.newFolder(cx)))
 					.child(button("powr-new-space", "+", "New space", () => run("space.new")))
 			)
-			.child(body);
+			.child(body)
+			// Under the list, not inside it. Drawn next to its own row it was
+			// cut off by the bottom of the panel for anything near the end of
+			// the list — half of it behind the agents below, with no way to
+			// scroll to the rest. Here it is whole wherever the row is, and
+			// the list keeps its place instead of jumping as the box opens.
+			.when(Boolean(open), (el) => el.child(open));
 	}
 }
