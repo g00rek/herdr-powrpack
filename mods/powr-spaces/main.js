@@ -70,6 +70,9 @@ const SKIP = "browsr.skip";
 // Where Browsr leaves a question and reads the answer. A file, because the
 // two are different programs: one is a mod in this window, the other is a
 // script an agent runs in a terminal somewhere else.
+// Browsr's own command, for the one thing this list changes that lives
+// outside Herdr. Change this line if your checkout is elsewhere.
+const BRIDGE = `${home()}/Projects/browsr/bridge.py`;
 const BROWSR_STATE = `${home()}/.local/state/herdr-dev-browser`;
 const ASK = `${BROWSR_STATE}/ask.json`;
 const ANSWER = `${BROWSR_STATE}/answer.json`;
@@ -230,6 +233,30 @@ export default class PowrSpaces extends View {
 		return first?.cwd || space.folder || null;
 	}
 
+	/** What git said about where this project sits, or null if we never asked. */
+	gitOf(space) {
+		const cwd = this.cwdOf(space);
+		return (cwd ? this.repos[cwd] : null) ?? null;
+	}
+
+	/**
+	 * The project a row belongs to: itself, unless it is a branch checked out
+	 * beside one, in which case the project it is a branch of.
+	 *
+	 * A branch is not a thing you file away on its own — it is part of the
+	 * project, and everything that applies to the project applies to it:
+	 * which folder it is in, and what colour it wears. Put TasteRay in a
+	 * folder and its branches go with it, because they were never separate.
+	 */
+	ownerOf(space) {
+		const info = this.gitOf(space);
+		if (!info || !info.linked) return space;
+		return spaces().find((other) => {
+			const theirs = this.gitOf(other);
+			return theirs && !theirs.linked && theirs.repo === info.repo;
+		}) ?? space;
+	}
+
 	/**
 	 * Ask git about the folders we have not asked about yet.
 	 *
@@ -282,10 +309,7 @@ export default class PowrSpaces extends View {
 	tree(list) {
 		const out = [];
 		const done = new Set();
-		const git = (space) => {
-			const cwd = this.cwdOf(space);
-			return (cwd ? this.repos[cwd] : null) ?? null;
-		};
+		const git = (space) => this.gitOf(space);
 		const drawn = new Set();
 		for (const space of list) {
 			const info = git(space);
@@ -470,28 +494,43 @@ export default class PowrSpaces extends View {
 	 * Herdr's own order, which is what the rest of the app reads.
 	 */
 	drop(cx) {
-		const moving = this.pressed;
+		const dragged = this.pressed;
 		const target = this.over;
 		this.pressed = null;
 		this.over = null;
-		if (!moving || !target) {
+		if (!dragged || !target) {
 			cx.notify();
 			return;
 		}
 		this.dropped = true;
 		const { list, of } = this.folders();
+		// Both ends of the drag are read as the project they belong to. Pick
+		// up a branch and the whole project moves, drop onto a branch and you
+		// have dropped onto its project: a branch has no place of its own.
+		const projectOf = (id) => {
+			const space = spaces().find((other) => other.id === id);
+			return space ? this.ownerOf(space).id : id;
+		};
+		const moving = projectOf(dragged);
+		const onto = target.kind === "space" ? projectOf(target.id) : target.id;
+		// Anything a branch was filed under before this rule is dead weight.
+		const clear = (map) => {
+			const next = { ...map };
+			if (dragged !== moving) delete next[dragged];
+			return next;
+		};
 		if (target.kind === "folder") {
-			this.save({ list, of: { ...of, [moving]: target.id } });
+			this.save({ list, of: { ...clear(of), [moving]: onto } });
 		} else if (target.kind === "out") {
-			const freed = { ...of };
+			const freed = clear(of);
 			delete freed[moving];
 			this.save({ list, of: freed });
-		} else if (target.id !== moving) {
-			const next = { ...of };
-			if (of[target.id]) next[moving] = of[target.id];
+		} else if (onto !== moving) {
+			const next = clear(of);
+			if (of[onto]) next[moving] = of[onto];
 			else delete next[moving];
 			this.save({ list, of: next });
-			const to = spaces().find((space) => space.id === target.id);
+			const to = spaces().find((space) => space.id === onto);
 			if (to) run("space.move", { id: moving, index: to.index });
 		}
 		cx.notify();
@@ -507,12 +546,28 @@ export default class PowrSpaces extends View {
 
 	// ---- browser ------------------------------------------------------
 
-	/** Give a project a browser, or take it away. */
-	toggleBrowser(space) {
+	/**
+	 * Give a project a browser, or take it away.
+	 *
+	 * Writing the list is only half of it. The browser is a separate program
+	 * and hears nothing until it is told: without the second half, ticking a
+	 * project here changed the list and left the strip exactly as it was —
+	 * which reads as the tick simply not working, and sent people hunting
+	 * for a group that was never made.
+	 */
+	toggleBrowser(space, cx) {
 		const chosen = { ...this.browsers() };
 		if (chosen[space]) delete chosen[space];
 		else chosen[space] = true;
 		setShared(ON, chosen);
+		cx.spawn(async () => {
+			// Nothing to report if it fails: the browser may not be running,
+			// and the list is right either way — the strip is made to match
+			// it again the moment it starts.
+			try {
+				await exec(BRIDGE, ["--app", "sync"]);
+			} catch {}
+		});
 	}
 
 	// ---- drawing ------------------------------------------------------
@@ -629,7 +684,7 @@ export default class PowrSpaces extends View {
 					.on_mouse_down("left", (_event, cx) => cx.stop_propagation())
 					.on_click((_event, cx) => {
 						cx.stop_propagation();
-						this.toggleBrowser(space.id);
+						this.toggleBrowser(space.id, cx);
 					})
 					// As bright as a name and no brighter. In the accent colour
 					// it was the loudest thing on the row, and it is the least
@@ -912,7 +967,10 @@ export default class PowrSpaces extends View {
 		const here = focused()?.space;
 		const { list, of } = this.folders();
 		const all = spaces();
-		const inFolder = (id) => list.some((f) => f.id === of[id]);
+		// Which folder a row is in — its project's folder, so a project and
+		// the branches beside it are never split between two places.
+		const folderOf = (space) => of[this.ownerOf(space).id];
+		const inFolder = (space) => list.some((f) => f.id === folderOf(space));
 
 		const body = v_flex().id("powr-list").flex_1().min_h(0).gap(1).px(6).pb(10)
 			.overflow_y_scrollbar().mode("always");
@@ -921,10 +979,12 @@ export default class PowrSpaces extends View {
 		// something you put away; the loose projects are the ones you are
 		// actually in, and they belong where the eye lands.
 		for (const folder of list) {
-			const inside = all.filter((space) => of[space.id] === folder.id);
+			const inside = this.tree(all.filter((space) => folderOf(space) === folder.id));
+			// The number is projects, not rows: a project with three branches
+			// beside it is one thing you put in here, not four.
 			body.child(this.folderHead(t, folder, inside));
 			if (folder.folded) continue;
-			for (const node of this.tree(inside)) {
+			for (const node of inside) {
 				body.child(div().pl(14).child(this.group(t, node, here, 0)));
 			}
 		}
@@ -932,7 +992,8 @@ export default class PowrSpaces extends View {
 		// Somewhere to drop a project that is in a folder, to take it out
 		// again. Only while one is being dragged, and only while it is in one:
 		// otherwise it is a strip of nothing across the list.
-		if (this.pressed && of[this.pressed]) {
+		const held = this.pressed ? all.find((space) => space.id === this.pressed) : null;
+		if (held && folderOf(held)) {
 			const out = this.over && this.over.kind === "out";
 			body.child(
 				h_flex()
@@ -952,7 +1013,7 @@ export default class PowrSpaces extends View {
 			);
 		}
 
-		for (const node of this.tree(all.filter((space) => !inFolder(space.id)))) {
+		for (const node of this.tree(all.filter((space) => !inFolder(space)))) {
 			body.child(this.group(t, node, here, 0));
 		}
 
