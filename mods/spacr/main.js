@@ -55,7 +55,7 @@ const GLYPHS_PER_ROW = 8;
 const GRID_HEIGHT = 6 * 29;
 
 // Every Lucide icon shipped here, as [name, the words it is filed under].
-const ICON_INDEX = `${appHome()}/mods/powr-spaces/icons/index.json`;
+const ICON_INDEX = `${appHome()}/mods/spacr/icons/index.json`;
 // How many matches a search shows. More than this is a word too short to
 // mean anything yet, and drawing two thousand at once is not free.
 const MATCHES = 120;
@@ -219,7 +219,7 @@ export default class PowrSpaces extends View {
 			// nobody is waiting on should not appear.
 			if (asked.at && Date.now() / 1000 - asked.at > 25) return;
 			this.answered = asked.id;
-			openOverlay({ mod: "powr-spaces", kind: "dialog", width: 430, props: { ask: asked } });
+			openOverlay({ mod: "spacr", kind: "dialog", width: 430, props: { ask: asked } });
 			cx.notify();
 		});
 	}
@@ -700,7 +700,7 @@ export default class PowrSpaces extends View {
 					.when(Boolean(from), (el) =>
 						el.border_1().border_color(this.colorOf(space, from)))
 					.child(icon
-						? svg(`mods/powr-spaces/icons/${icon}.svg`).size(from ? 11 : 14)
+						? svg(`mods/spacr/icons/${icon}.svg`).size(from ? 11 : 14)
 							.text_color(from ? this.colorOf(space, from) : "#ffffff")
 						: div().text_size(from ? 11 : 13)
 							.text_color(from ? this.colorOf(space, from) : "#ffffff")
@@ -739,7 +739,7 @@ export default class PowrSpaces extends View {
 					// As bright as a name and no brighter. In the accent colour
 					// it was the loudest thing on the row, and it is the least
 					// important thing on it.
-					.child(svg("mods/powr-spaces/browser.svg").size(13)
+					.child(svg("mods/spacr/browser.svg").size(13)
 						.text_color(on ? t.foreground : t.border))
 			);
 	}
@@ -810,7 +810,7 @@ export default class PowrSpaces extends View {
 				cx.stop_propagation();
 				const rows = Math.ceil(ICONS.length / GLYPHS_PER_ROW);
 				openOverlay({
-					mod: "powr-spaces", kind: "popup", width: 264,
+					mod: "spacr", kind: "popup", width: 264,
 					height: 30 + 36 + 36 + Math.min(rows * 29, GRID_HEIGHT) + 10 + 36,
 					props: { role: "folder", id: folder.id },
 				});
@@ -824,8 +824,8 @@ export default class PowrSpaces extends View {
 					.size(22).flex_none().items_center().justify_center()
 					.cursor_pointer()
 					.child(svg(folder.icon
-						? `mods/powr-spaces/icons/${folder.icon}.svg`
-						: "mods/powr-spaces/folder.svg").size(19).text_color(tint))
+						? `mods/spacr/icons/${folder.icon}.svg`
+						: "mods/spacr/folder.svg").size(19).text_color(tint))
 			);
 
 		if (this.editing === folder.id) {
@@ -840,7 +840,7 @@ export default class PowrSpaces extends View {
 			head
 				.child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(folder.name))
 				.child(div().flex_none().text_size(11).text_color(t.dim).child(String(inside.length)))
-				.child(svg(`mods/powr-spaces/chevron-${folder.folded ? "right" : "down"}.svg`)
+				.child(svg(`mods/spacr/chevron-${folder.folded ? "right" : "down"}.svg`)
 					.size(11).flex_none().text_color(t.dim));
 		}
 		return head;
@@ -871,7 +871,7 @@ export default class PowrSpaces extends View {
 	 */
 	openLook(id, from) {
 		openOverlay({
-			mod: "powr-spaces", kind: "popup", width: 264,
+			mod: "spacr", kind: "popup", width: 264,
 			height: 30 + (from ? 26 : 36) + 36 + GRID_HEIGHT + 14,
 			props: { role: "look", id, from },
 		});
@@ -913,7 +913,7 @@ export default class PowrSpaces extends View {
 				.when((chosen ?? plain) === name, (el) => el.bg(t.selected))
 				.hover((s) => s.bg(t.hover))
 				.on_click((_event, cx) => pick(name === plain ? null : name, cx))
-				.child(svg(`mods/powr-spaces/icons/${name}.svg`).size(14)
+				.child(svg(`mods/spacr/icons/${name}.svg`).size(14)
 					.text_color((chosen ?? plain) === name ? t.accent : tint));
 		// A project's own letter is the first choice: what it wears with no
 		// icon at all, picked the same way as any icon.
@@ -1120,7 +1120,7 @@ export default class PowrSpaces extends View {
 					.when(off > 0, (el) => el.child(
 						div().text_size(10.5).text_color(t.dim).child(`${off} without a browser`)))
 					.child(button("powr-new-folder",
-						svg("mods/powr-spaces/folder.svg").size(12), "New folder",
+						svg("mods/spacr/folder.svg").size(12), "New folder",
 						(_event, cx) => this.newFolder(cx)))
 					.child(button("powr-new-space", "+", "New space", () => run("space.new")))
 			)
