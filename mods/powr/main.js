@@ -21,8 +21,8 @@ const ON = "browsr.on";
 
 // The modules this panel switches, in the order the column lists them.
 const ALL = [
-	{ id: "browsr", name: "Browsr", about: "A browser whose tab groups follow the project in front." },
-	{ id: "spacr", name: "Spacr", about: "The project list: folders, branches, icons, colours, the browser mark." },
+	{ id: "browsr", name: "Browsr" },
+	{ id: "spacr", name: "Spacr" },
 ];
 
 // Which group you are in, said in colour.
@@ -112,7 +112,18 @@ export default class Powr extends View {
    */
   switchModule(id, on, cx) {
     setShared(MODULES, { ...this.modules(), [id]: on });
-    if (id === "browsr" && !on) this.act(cx, "off", "switching off");
+    if (id === "browsr" && !on) {
+      // Its own path, not act(): act() does nothing while another command
+      // runs, and a switch that is stored but never carried out is a lie.
+      cx.spawn(async (cx) => {
+        try {
+          await exec(BRIDGE, ["--app", "off"]);
+        } catch (error) {
+          notify({ title: "Browsr", body: String(error?.message ?? error), level: "error" });
+        }
+        this.refresh(cx);
+      });
+    }
     if (id === "spacr") {
       const { tree, changed } = on
         ? swapMod(layout(), "spaces", "spacr")
