@@ -43,6 +43,9 @@ const ICONS = [
 
 // What a project can wear instead of its initial. A project is anything, so
 // these are not all one shape the way the folder glyphs are.
+// How many glyphs fit across a popup 264 wide: 26 each and 3 between.
+const GLYPHS_PER_ROW = 8;
+
 const SPACE_ICONS = [
 	"code", "braces", "terminal", "rocket", "bug", "database", "server",
 	"shield", "globe", "cloud", "cpu", "smartphone", "monitor", "gamepad-2",
@@ -106,10 +109,27 @@ function glyph(status) {
 
 export default class PowrSpaces extends View {
 	init(_props, cx) {
-		// Two roles, one mod: the list, and the question it puts on screen
-		// when Browsr finds a project switched off.
+		// One mod, several roles: the list; the question it puts on screen
+		// when Browsr finds a project switched off; and the two popups the
+		// list opens at the pointer — how a project or a folder looks (a
+		// left press on its icon), and a folder's own menu (a right press on
+		// it, the way a right press on a project gives Herdr's).
 		this.ask = props()?.ask ?? null;
 		if (this.ask) {
+			cx.notify();
+			return;
+		}
+		this.role = props()?.role ?? null;
+		if (this.role === "look") {
+			cx.notify();
+			return;
+		}
+		if (this.role === "folder") {
+			const folder = this.folders().list.find((f) => f.id === props().id);
+			this.name = InputState.new({ placeholder: "Folder" });
+			this.name.set_value(folder?.name ?? "");
+			this.name.on("submit", (_event, cx) => this.renameAndClose(cx));
+			this.name.focus();
 			cx.notify();
 			return;
 		}
@@ -121,8 +141,6 @@ export default class PowrSpaces extends View {
 		// renamed, and a field per folder would keep as many alive.
 		this.name = InputState.new({ placeholder: "Folder" });
 		this.editing = null; // the folder being renamed
-		this.menu = null; // the folder showing its colours and its delete
-		this.spaceMenu = null; // the project showing its colours and its glyphs
 		this.pressed = null; // the project under a held button, maybe a drag
 		this.over = null; // { kind: "space" | "folder" | "out", id }
 		this.dropped = false; // swallow the click that ends a drag
@@ -431,7 +449,6 @@ export default class PowrSpaces extends View {
 		// Straight into the name: a folder called "New folder" that you have
 		// to find and rename afterwards is a folder you end up living with.
 		this.editing = id;
-		this.menu = null;
 		this.name.set_value("New folder");
 		this.name.focus();
 		cx.notify();
@@ -463,7 +480,6 @@ export default class PowrSpaces extends View {
 		// container that owns anything.
 		const freed = Object.fromEntries(Object.entries(of).filter(([, f]) => f !== id));
 		this.save({ list: list.filter((f) => f.id !== id), of: freed });
-		this.menu = null;
 		if (this.editing === id) this.editing = null;
 		cx.notify();
 	}
@@ -603,16 +619,8 @@ export default class PowrSpaces extends View {
 					this.dropped = false;
 					return;
 				}
-				if (this.spaceMenu === space.id) {
-					this.spaceMenu = null;
-					cx.notify();
-					return;
-				}
 				run("space.select", { id: space.id });
 			})
-			// Herdr's own menu, not one of ours: renaming, closing and the rest
-			// are its business, and a second menu that did the same things
-			// differently would be a worse list, not a better one.
 			// Herdr's own menu, untouched. Rename, close, worktrees and the
 			// rest are its business; ours is the tile, and that is what you
 			// press to get at ours.
@@ -623,8 +631,6 @@ export default class PowrSpaces extends View {
 					props: { tab: "space", target: { id: space.id } },
 				});
 			})
-			.when(this.spaceMenu === space.id, (el) =>
-				el.on_mouse_down("left", (_event, cx) => cx.stop_propagation()))
 			// A project's tile is filled; a branch beside it gets the same
 			// tile drawn as an outline. Same shape and same colour say they
 			// belong together; filled against hollow says which one is the
@@ -642,9 +648,7 @@ export default class PowrSpaces extends View {
 					.on_mouse_down("left", (_event, cx) => cx.stop_propagation())
 					.on_click((_event, cx) => {
 						cx.stop_propagation();
-						this.spaceMenu = this.spaceMenu === space.id ? null : space.id;
-						this.menu = null;
-						cx.notify();
+						this.openLook("space", space.id, from?.name ?? null);
 					})
 					.when(!from, (el) => el.bg(this.colorOf(space, null)))
 					.when(Boolean(from), (el) =>
@@ -746,19 +750,9 @@ export default class PowrSpaces extends View {
 			.hover((s) => s.bg(t.hover))
 			.on_mouse_move((_event, cx) => this.hover("folder", folder.id, cx))
 			.on_mouse_up("left", (_event, cx) => this.drop(cx))
-			// Kept from the panel below, which closes its controls on any
-			// press outside them: a press on this row is a press on their own
-			// header, and it should put them away rather than fold the folder.
-			.when(this.menu === folder.id, (el) =>
-				el.on_mouse_down("left", (_event, cx) => cx.stop_propagation()))
 			.on_click((_event, cx) => {
 				if (this.dropped) {
 					this.dropped = false;
-					return;
-				}
-				if (this.menu === folder.id) {
-					this.menu = null;
-					cx.notify();
 					return;
 				}
 				this.toggleFolder(folder.id, cx);
@@ -768,9 +762,10 @@ export default class PowrSpaces extends View {
 			// be another mod to install and keep.
 			.on_mouse_down("right", (_event, cx) => {
 				cx.stop_propagation();
-				this.menu = this.menu === folder.id ? null : folder.id;
-				this.editing = null;
-				cx.notify();
+				openOverlay({
+					mod: "powr-spaces", kind: "popup", width: 220, height: 104,
+					props: { role: "folder", id: folder.id },
+				});
 			})
 			.child(
 				// No tile under it. The glyph is already a folder, so a filled
@@ -784,9 +779,7 @@ export default class PowrSpaces extends View {
 					.on_mouse_down("left", (_event, cx) => cx.stop_propagation())
 					.on_click((_event, cx) => {
 						cx.stop_propagation();
-						this.menu = this.menu === folder.id ? null : folder.id;
-						this.spaceMenu = null;
-						cx.notify();
+						this.openLook("folder", folder.id, null);
 					})
 					.child(svg(folder.icon
 						? `mods/powr-spaces/icons/${folder.icon}.svg`
@@ -825,41 +818,29 @@ export default class PowrSpaces extends View {
 			.child(label);
 	}
 
-	/** The box itself: the same frame for a folder and for a project. */
+	/**
+	 * Open how a project or a folder looks, at the pointer.
+	 *
+	 * A popup, the way Herdr's own menu opens: where you pressed, kept inside
+	 * the window by Herdr, and gone with a press beside it or Esc. Drawn into
+	 * the list instead, it either fell off the bottom behind the agents or —
+	 * moved under the list to stop that — opened somewhere far from the row
+	 * it was about.
+	 */
+	openLook(kind, id, from) {
+		const count = kind === "folder" ? ICONS.length : SPACE_ICONS.length;
+		const rows = Math.ceil(count / GLYPHS_PER_ROW);
+		const height = 30 + (from ? 26 : 36) + rows * 29 + 10 + (kind === "space" ? 36 : 0);
+		openOverlay({
+			mod: "powr-spaces", kind: "popup", width: 264, height,
+			props: { role: "look", kind, id, from },
+		});
+	}
+
+	/** A popup's content: its title, then its rows. */
 	box(t, title, rows) {
-		// Drawn as a box, not as more list. Without an edge of its own it
-		// read as part of the list underneath, and the words at the bottom
-		// looked like headings over the projects below.
-		const panel = v_flex()
-			.gap(4).mx(2).mt(2).mb(4).p(6)
-			.rounded(8)
-			.bg(t.popover)
-			.border_1()
-			.border_color(t.border)
-			.on_mouse_down("left", (_event, cx) => cx.stop_propagation())
-			.on_mouse_down("right", (_event, cx) => cx.stop_propagation())
-			// It stands away from the row it belongs to, so it says whose it
-			// is — and the way out is up here, where a window's is.
-			.child(
-				h_flex().items_center().gap(6).px(8).pt(2).pb(1)
-					.child(div().flex_1().min_w(0).truncate()
-						.text_size(11).text_color(t.dim).child(title))
-					.child(
-						div()
-							.id("powr-box-close")
-							.px(5).rounded(4)
-							.cursor_pointer()
-							.text_size(12)
-							.text_color(t.dim)
-							.hover((s) => s.bg(t.hover).text_color(t.foreground))
-							.on_click((_event, cx) => {
-								this.menu = null;
-								this.spaceMenu = null;
-								cx.notify();
-							})
-							.child("\u00d7")
-					)
-			);
+		const panel = v_flex().size_full().gap(4).p(6).bg(t.popover)
+			.child(div().px(8).pt(2).pb(1).truncate().text_size(11).text_color(t.dim).child(title));
 		for (const row of rows) panel.child(row);
 		return panel;
 	}
@@ -897,17 +878,6 @@ export default class PowrSpaces extends View {
 		return h_flex().flex_wrap().gap(3).px(6).pb(2).children(names.map(tile));
 	}
 
-	/** The project a branch belongs to, or null when this is not a branch. */
-	projectOf(space) {
-		const cwd = this.cwdOf(space);
-		const info = cwd ? this.repos[cwd] : null;
-		if (!info || !info.linked) return null;
-		return spaces().find((other) => {
-			const theirs = this.cwdOf(other) ? this.repos[this.cwdOf(other)] : null;
-			return theirs && !theirs.linked && theirs.repo === info.repo;
-		}) ?? null;
-	}
-
 	spaceControls(t, space) {
 		const stored = shared(HERDR_COLORS);
 		const color = (stored && typeof stored === "object" ? stored[space.id] : null) ?? null;
@@ -915,11 +885,11 @@ export default class PowrSpaces extends View {
 		// own would be offering something that does nothing. It says where the
 		// colour comes from instead, which is the answer to the question
 		// anyone opening this was about to ask.
-		const project = this.projectOf(space);
+		const from = props()?.from ?? null;
 		return this.box(t, space.name, [
-			project
+			from
 				? div().text_size(11).text_color(t.dim).px(8).py(4)
-					.child(`colour comes from ${project.name}`)
+					.child(`colour comes from ${from}`)
 				: this.swatches(t, { key: `sp-${space.id}`, color },
 					(pick, cx) => this.paintSpace(space.id, pick, cx)),
 			this.glyphs(t, {
@@ -948,22 +918,47 @@ export default class PowrSpaces extends View {
 				tint: t.foreground,
 				pick: (name, cx) => this.wearIcon(folder.id, name, cx),
 			}),
-			div().h(1).mx(6).my(2).bg(t.border),
-			this.item(t, `powr-folder-rename-${folder.id}`, "Rename folder\u2026", (_event, cx) => {
-				this.editing = folder.id;
-				this.menu = null;
-				this.name.set_value(folder.name);
-				this.name.focus();
-				cx.notify();
-			}),
-			this.item(t, `powr-folder-delete-${folder.id}`, "Delete folder",
-				(_event, cx) => this.deleteFolder(folder.id, cx)),
 		]);
+	}
+
+	/** A folder's own menu: its name, and the way to be rid of it. */
+	renderFolderMenu(t) {
+		const id = props()?.id;
+		return this.box(t, "Folder", [
+			h_flex().h(28).mx(4).px(6).items_center().rounded(6)
+				.border_1().border_color(t.accent)
+				.child(Input.new(this.name).h_full().text_size(12).text_color(t.foreground)),
+			this.item(t, `powr-folder-delete-${id}`, "Delete folder", (_event, cx) => {
+				this.deleteFolder(id, cx);
+				closeOverlay(props().overlay);
+			}),
+		]);
+	}
+
+	renameAndClose(cx) {
+		const id = props()?.id;
+		const typed = this.name.value().trim();
+		const { list, of } = this.folders();
+		if (typed) this.save({ of, list: list.map((f) => (f.id === id ? { ...f, name: typed } : f)) });
+		closeOverlay(props().overlay);
+		cx.notify();
+	}
+
+	renderLook(t) {
+		const { kind, id } = props() ?? {};
+		if (kind === "folder") {
+			const folder = this.folders().list.find((f) => f.id === id);
+			return folder ? this.folderControls(t, folder) : div();
+		}
+		const space = spaces().find((other) => other.id === id);
+		return space ? this.spaceControls(t, space) : div();
 	}
 
 	render() {
 		const t = theme();
 		if (this.ask) return this.renderAsk(t);
+		if (this.role === "look") return this.renderLook(t);
+		if (this.role === "folder") return this.renderFolderMenu(t);
 		const here = focused()?.space;
 		const { list, of } = this.folders();
 		const all = spaces();
@@ -1026,12 +1021,6 @@ export default class PowrSpaces extends View {
 			body.child(this.group(t, node, here, 0));
 		}
 
-		const folderOpen = list.find((f) => f.id === this.menu);
-		const spaceOpen = this.spaceMenu ? all.find((s) => s.id === this.spaceMenu) : null;
-		const open = folderOpen
-			? this.folderControls(t, folderOpen)
-			: (spaceOpen ? this.spaceControls(t, spaceOpen) : null);
-
 		const chosen = this.browsers();
 		const off = all.filter((space) => chosen[space.id] !== true).length;
 		const button = (id, label, hint, handler) =>
@@ -1059,25 +1048,10 @@ export default class PowrSpaces extends View {
 			.on_mouse_up("left", (_event, cx) => {
 				if (this.pressed) this.drop(cx);
 			})
-			// A press anywhere but inside a folder's own controls closes them:
-			// elsewhere in this list, and — the second handler — anywhere
-			// else in the window at all, which is where a press that means
-			// "I am done with this" usually lands.
-			.on_mouse_down("left", (_event, cx) => {
-				if (this.menu === null && this.spaceMenu === null) return;
-				this.menu = null;
-				this.spaceMenu = null;
-				cx.notify();
-			})
+			// A press anywhere else finishes a name being typed into a new
+			// folder, the way clicking off a field finishes it everywhere.
 			.on_mouse_down_out((_event, cx) => {
-				if (this.menu === null && this.spaceMenu === null && this.editing === null) return;
-				this.menu = null;
-				this.spaceMenu = null;
-				// A name half typed is kept, not thrown away: it is the same
-				// as clicking off a field, which is how a rename is finished
-				// everywhere else.
 				if (this.editing !== null) this.commitName(cx);
-				cx.notify();
 			})
 			.child(
 				h_flex().px(14).items_center().gap(4)
@@ -1089,12 +1063,6 @@ export default class PowrSpaces extends View {
 						(_event, cx) => this.newFolder(cx)))
 					.child(button("powr-new-space", "+", "New space", () => run("space.new")))
 			)
-			.child(body)
-			// Under the list, not inside it. Drawn next to its own row it was
-			// cut off by the bottom of the panel for anything near the end of
-			// the list — half of it behind the agents below, with no way to
-			// scroll to the rest. Here it is whole wherever the row is, and
-			// the list keeps its place instead of jumping as the box opens.
-			.when(Boolean(open), (el) => el.child(open));
+			.child(body);
 	}
 }
