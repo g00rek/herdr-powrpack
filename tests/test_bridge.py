@@ -996,26 +996,23 @@ class BridgeTests(unittest.TestCase):
             with patch.object(bridge, "app_home", lambda: home):
                 self.assertEqual(bridge.accent_color(), "blue")
 
-    def test_a_watcher_notices_its_own_code_has_changed(self):
-        """A follower started in the afternoon kept matching the strip against
-        a list retired an hour later, for five hours. It has to see that the
-        file under it is not the one it is running."""
+    def test_restart_finds_every_watcher_and_nothing_else(self):
+        """Restart has to replace the watcher as well as the browser, or the
+        old code keeps following."""
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "bridge.py"
-            source.write_text("X = 1\n")
-            born = bridge.source_stamp(source)
-            self.assertFalse(bridge.updated_source(born, source))
-            os.utime(source, ns=(born + 10**9, born + 10**9))
-            self.assertTrue(bridge.updated_source(born, source))
-
-    def test_a_save_caught_halfway_is_not_restarted_into(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "bridge.py"
-            source.write_text("X = 1\n")
-            born = bridge.source_stamp(source)
-            source.write_text("def broken(:\n")
-            os.utime(source, ns=(born + 10**9, born + 10**9))
-            self.assertFalse(bridge.updated_source(born, source))
+            proc = Path(directory)
+            processes = {
+                "21": ["/usr/bin/python3", "/x/browsr/bridge.py", "--app", "watch"],
+                "22": ["/usr/bin/python3", "/x/browsr/bridge.py", "watch"],
+                "23": ["/usr/bin/python3", "/x/browsr/bridge.py", "--app", "status"],
+                "24": ["/usr/bin/python3", "/x/browsr/browsr-chrome-mcp.py"],
+                "25": ["vim", "watch"],
+            }
+            for name, argv in processes.items():
+                (proc / name).mkdir()
+                (proc / name / "cmdline").write_bytes(
+                    b"\0".join(a.encode() for a in argv) + b"\0")
+            self.assertEqual(bridge.watcher_pids(proc), [21, 22])
 
     def test_an_app_that_will_not_answer_is_not_a_user_with_no_spaces(self):
         """The extension reads an empty list as "say nothing" on purpose."""

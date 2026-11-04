@@ -881,13 +881,45 @@ def sync_and_follow():
     start_watcher()
 
 
+def watcher_pids(proc_root=Path("/proc")):
+    """The running watchers: `bridge.py watch`, with or without `--app`."""
+    me = os.getpid()
+    found = []
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit() or int(entry.name) == me:
+            continue
+        try:
+            fields = entry.joinpath("cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        args = [field.decode(errors="replace") for field in fields if field]
+        if any(arg.endswith("bridge.py") for arg in args) and "watch" in args:
+            found.append(int(entry.name))
+    return sorted(found)
+
+
+def stop_watchers():
+    for pid in watcher_pids():
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+
 def restart_browser():
-    """Quit the browser and bring it back.
+    """Quit the browser and the watcher, and bring both back.
 
     The one thing that makes Chromium read an edited extension again: it
     keeps its own compiled copy, and a plain restart runs that copy unless
     the profile's registration is dropped first, which starting does.
+
+    The watcher goes too, for the same reason: Python reads its code once,
+    and a new one started beside it finds the lock taken and leaves. Left
+    running, a watcher from the afternoon kept matching the strip against a
+    list retired an hour later — for five hours, through a browser restart.
+    Restart means all of Browsr runs today's code.
     """
+    stop_watchers()
     quit_browser()
     deadline = time.monotonic() + 10
     while browser_pids() and time.monotonic() < deadline:
@@ -1103,42 +1135,6 @@ def take_watch_locks(health=None, focus=None):
     return following, True, handles
 
 
-# How often a watcher looks at its own source.
-SOURCE_CHECK_SECONDS = 2.0
-
-
-def source_stamp(path=None):
-    """When this file was last written, or None if it cannot be read."""
-    try:
-        return (path or Path(__file__).resolve()).stat().st_mtime_ns
-    except OSError:
-        return None
-
-
-def updated_source(born, path=None):
-    """Whether the file on disk is newer than the one this process runs,
-    and whole enough to run.
-
-    A watcher lives for days and Python reads its source once. A watcher
-    started at 16:56 was still matching the strip against a list retired at
-    17:21 five hours later: every switch shut the groups of projects turned
-    on since then and brought back one turned off, while every check from
-    outside, all of them running today's code, said the strip was right.
-
-    A save caught halfway is not a reason to restart into a broken file, so
-    it has to compile first; the next look catches the finished one.
-    """
-    path = path or Path(__file__).resolve()
-    stamp = source_stamp(path)
-    if stamp is None or stamp == born:
-        return False
-    try:
-        compile(path.read_text(), str(path), "exec")
-    except (OSError, SyntaxError, ValueError):
-        return False
-    return True
-
-
 def watch_health():
     """Run by Herdr at startup; one per machine, not one per session.
 
@@ -1157,18 +1153,8 @@ def watch_health():
     state = None
     space = app_focused_space()
     next_health = 0.0
-    born = source_stamp()
-    next_source = 0.0
     while True:
         now = time.monotonic()
-        if now >= next_source:
-            next_source = now + SOURCE_CHECK_SECONDS
-            if updated_source(born):
-                # Become the new code in place. The lock files are not
-                # inherited across exec, so they are let go and taken again
-                # by the process that comes back, a moment later.
-                os.execv(sys.executable,
-                         [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]])
         if not checking and now >= next_health:
             # Whoever was reporting on the browser may be gone — a Herdr shut
             # down for the day. Without this the job stays undone for as long
