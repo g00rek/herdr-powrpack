@@ -619,11 +619,14 @@ export default class PowrSpaces extends View {
 		const block = v_flex().gap(1).child(this.row(t, space, space.id === here, null));
 		if (!kids.length) return block;
 		const line = this.colorOf(space, null);
-		const nest = v_flex().gap(1).ml(indent + 8).pl(9).border_l_1().border_color(line);
+		// No padding between the rule and the stubs: with any, the stubs float
+		// clear of the line and read as a column of hyphens rather than as a
+		// tree. The gap before the row is made by the stub's own width.
+		const nest = v_flex().gap(1).ml(indent + 17).border_l_1().border_color(line);
 		for (const kid of kids) {
 			nest.child(
 				h_flex().items_center()
-					.child(div().flex_none().w(7).h(1).bg(line))
+					.child(div().flex_none().w(11).h(1).bg(line))
 					.child(div().flex_1().min_w(0)
 						.child(this.row(t, kid, kid.id === here, null, space)))
 			);
