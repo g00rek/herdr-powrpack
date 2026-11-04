@@ -429,6 +429,45 @@ test('every group is the one quiet colour, and nothing else is accepted', async 
 		'passed Chromium a colour it does not have');
 });
 
+test('switching marks the group you moved to and clears the one you left', async () => {
+	// Twelve grey groups in a strip and no way to see which one is yours.
+	// Both colours come from Herdr with the switch; the extension decides
+	// nothing, so the mark cannot survive on a group you have left.
+	const harness = await boot({ windows: [1] });
+	await harness.deliver(workspaceSet(SESSION, ['w16', 'api'], ['w1R', 'web']));
+	const wear = title => harness.strip().find(g => g.title === title).color;
+
+	await harness.deliver({
+		type: 'workspace', event: 'focused', session_id: SESSION,
+		workspace_id: 'w16', label: 'api', color: 'orange', rest: 'grey',
+	});
+	assert.equal(wear('api'), 'orange');
+	assert.equal(wear('web'), 'grey');
+
+	await harness.deliver({
+		type: 'workspace', event: 'focused', session_id: SESSION,
+		workspace_id: 'w1R', label: 'web', color: 'orange', rest: 'grey',
+	});
+	assert.equal(wear('web'), 'orange');
+	assert.equal(wear('api'), 'grey', 'the group left behind kept the mark');
+});
+
+test('a switch that names no colour only collapses, as it always did', async () => {
+	// An older bridge sends neither, and a colour Chromium does not know
+	// would throw and take the whole switch with it.
+	const harness = await boot({ windows: [1] });
+	await harness.deliver(workspaceSet(SESSION, ['w16', 'api'], ['w1R', 'web']));
+	await harness.deliver({
+		type: 'workspace', event: 'focused', session_id: SESSION,
+		workspace_id: 'w16', label: 'api', color: 'chartreuse',
+	});
+	const strip = harness.strip();
+	assert.notEqual(strip.find(g => g.title === 'api').color, 'chartreuse',
+		'passed Chromium a colour it does not have');
+	assert.deepEqual(
+		harness.state.groups.filter(g => !g.collapsed).map(g => g.title), ['api']);
+});
+
 test('a Herdr that is still running does not lose its groups', async () => {
 	// Two Herdrs side by side is a supported setup: the bridge names a session
 	// only when it is not answering, and nothing else may be taken.

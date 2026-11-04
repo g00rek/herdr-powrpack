@@ -738,6 +738,47 @@ def tui_running():
 # nothing, which is the point: the names are what you read.
 GROUP_COLOR = "grey"
 
+# The one exception: the project you are in right now wears a colour, so it
+# can be found in a strip of twelve grey ones at a glance.
+#
+# Which colour is not ours to choose. The panel is the only part of Browsr
+# that can see the theme, so it works out which of Chromium's nine is
+# nearest the accent and leaves the name here; change the Omarchy theme and
+# the mark follows. Blue only until it has — the first draw of the button
+# writes it, a second after the window opens.
+ACCENT_KEY = "browsr.accent"
+ACCENT_FALLBACK = "blue"
+GROUP_COLOR_NAMES = frozenset({
+    "grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange",
+})
+
+
+def accent_color():
+    """The colour the group you are in wears, never the resting colour."""
+    name = app_shared().get(ACCENT_KEY)
+    if isinstance(name, str) and name in GROUP_COLOR_NAMES and name != GROUP_COLOR:
+        return name
+    return ACCENT_FALLBACK
+
+
+def focused_message(workspace_id, label=None, session_id=None):
+    """Switch to this project's group.
+
+    Both colours travel with the switch: the one that marks where you have
+    arrived, and the one everything else goes back to. The extension holds
+    no opinion about colour, so there is nowhere for the two ends to drift
+    apart.
+    """
+    return {
+        "type": "workspace",
+        "event": "focused",
+        "session_id": session_id or herdr_session_id(),
+        "workspace_id": workspace_id,
+        "label": label or workspace_id,
+        "color": accent_color(),
+        "rest": GROUP_COLOR,
+    }
+
 
 def workspace_set_message(workspaces, session_id=None):
     return {
@@ -747,7 +788,10 @@ def workspace_set_message(workspaces, session_id=None):
             {
                 "workspace_id": workspace["workspace_id"],
                 "label": workspace.get("label") or workspace["workspace_id"],
-                "color": GROUP_COLOR,
+                # The one you are in is already marked here, so that a list
+                # arriving with the switch does not grey it for the moment
+                # between the two messages.
+                "color": accent_color() if workspace.get("focused") else GROUP_COLOR,
             }
             for workspace in workspaces
         ],
@@ -769,14 +813,10 @@ def sync_workspaces():
         socket_request(message, timeout=20)
         focused = next((item for item in workspaces if item.get("focused")), None)
         if focused:
-            socket_request({
-                "type": "workspace",
-                "event": "focused",
-                "request_id": uuid.uuid4().hex,
-                "session_id": session_id,
-                "workspace_id": focused["workspace_id"],
-                "label": focused.get("label") or focused["workspace_id"],
-            }, timeout=10)
+            message = focused_message(
+                focused["workspace_id"], focused.get("label"), session_id)
+            message["request_id"] = uuid.uuid4().hex
+            socket_request(message, timeout=10)
     except (OSError, RuntimeError, json.JSONDecodeError):
         return
 
@@ -1313,12 +1353,16 @@ def event_command():
     }
     if event_name not in mapping:
         raise RuntimeError(f"Unsupported Herdr event: {event_name}")
+    workspace_id = context["workspace_id"]
+    label = context.get("workspace_label") or workspace_id
+    if mapping[event_name] == "focused":
+        return focused_message(workspace_id, label)
     return {
         "type": "workspace",
         "event": mapping[event_name],
         "session_id": herdr_session_id(),
-        "workspace_id": context["workspace_id"],
-        "label": context.get("workspace_label") or context["workspace_id"],
+        "workspace_id": workspace_id,
+        "label": label,
     }
 
 

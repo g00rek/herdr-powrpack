@@ -262,7 +262,7 @@ async function syncWorkspaceSet(message) {
 	await saveState();
 }
 
-async function activateWorkspace(workspaceId, label, sessionId) {
+async function activateWorkspace(workspaceId, label, sessionId, mark, rest) {
 	const key = workspaceKey(sessionId, workspaceId);
 	const group = await ensureGroup(sessionId, workspaceId, label);
 	const tabs = await chrome.tabs.query({ groupId: group.id });
@@ -272,10 +272,20 @@ async function activateWorkspace(workspaceId, label, sessionId) {
 		await chrome.tabs.update(tab.id, { active: true });
 		lastActiveTabs.set(key, tab.id);
 	}
+	// The group you have arrived at is expanded and wears the mark; every
+	// other one is collapsed and back to the resting colour. Both colours
+	// come from Herdr, which knows the theme — without them this is only a
+	// collapse, exactly as it was before there was a mark.
+	const paint = name => (name && GROUP_COLORS.has(name) ? name : null);
+	const here = paint(mark);
+	const away = paint(rest);
 	for (const [otherKey, otherGroupId] of groups) {
+		const current = otherKey === key;
+		const color = current ? here : away;
 		try {
 			await chrome.tabGroups.update(otherGroupId, {
-				collapsed: otherKey !== key,
+				collapsed: !current,
+				...(color ? { color } : {}),
 			});
 		} catch {}
 	}
@@ -395,7 +405,8 @@ async function handleMessage(message) {
 					});
 			}
 			if (message.event === 'focused')
-				await activateWorkspace(message.workspace_id, message.label, message.session_id);
+				await activateWorkspace(message.workspace_id, message.label,
+					message.session_id, message.color, message.rest);
 			if (message.event === 'closed') {
 				await closeWorkspaceGroup(workspaceKey(message.session_id, message.workspace_id));
 				await saveState();

@@ -61,14 +61,20 @@ class BridgeTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "HERDR_PLUGIN_EVENT_JSON": json.dumps(event),
             "HERDR_PLUGIN_CONTEXT_JSON": json.dumps(context),
-        }, clear=True):
-            with patch.object(bridge, "herdr_session_id", return_value="/run/herdr.sock"):
+        }, clear=True), tempfile.TemporaryDirectory() as directory:
+            # An app home of its own: a switch now carries the colour the
+            # panel worked out from the theme, and reading the real one would
+            # make this test say whatever his window happens to be wearing.
+            with patch.object(bridge, "herdr_session_id", return_value="/run/herdr.sock"), \
+                    patch.object(bridge, "app_home", lambda: Path(directory)):
                 self.assertEqual(bridge.event_command(), {
                     "type": "workspace",
                     "event": "focused",
                     "session_id": "/run/herdr.sock",
                     "workspace_id": "w7",
                     "label": "My app",
+                    "color": "blue",
+                    "rest": "grey",
                 })
 
 
@@ -944,6 +950,51 @@ class BridgeTests(unittest.TestCase):
                 json.dumps({"browsr.on": {"sp1": True, "sp2": False}}))
             with patch.object(bridge, "app_home", lambda: home):
                 self.assertEqual(bridge.spaces_with_a_browser(["sp1", "sp2"]), {"sp1"})
+
+    def test_the_group_you_are_in_is_the_only_one_wearing_a_colour(self):
+        """Twelve grey groups and one marked. The mark rides along with the
+        list itself, so there is no moment where it has been greyed and the
+        switch has not arrived yet."""
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "shared.json").write_text(json.dumps({"browsr.accent": "orange"}))
+            with patch.object(bridge, "app_home", lambda: home), \
+                    patch.object(bridge, "herdr_session_id", return_value="/run/h.sock"):
+                message = bridge.workspace_set_message([
+                    {"workspace_id": "sp1", "label": "api"},
+                    {"workspace_id": "sp2", "label": "notes", "focused": True},
+                ])
+        self.assertEqual([w["color"] for w in message["workspaces"]], ["grey", "orange"])
+
+    def test_a_switch_carries_the_mark_and_what_the_rest_go_back_to(self):
+        """The extension holds no opinion about colour, so both ends of the
+        change travel with the switch that causes it."""
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "shared.json").write_text(json.dumps({"browsr.accent": "cyan"}))
+            with patch.object(bridge, "app_home", lambda: home), \
+                    patch.object(bridge, "herdr_session_id", return_value="/run/h.sock"):
+                message = bridge.focused_message("sp2", "notes")
+        self.assertEqual(message["event"], "focused")
+        self.assertEqual((message["color"], message["rest"]), ("cyan", "grey"))
+
+    def test_an_accent_chromium_never_heard_of_is_not_sent_to_it(self):
+        """Chromium refuses anything outside its nine names, and a refused
+        update throws — taking the whole switch down with it."""
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "shared.json").write_text(
+                json.dumps({"browsr.accent": "#faa968"}))
+            with patch.object(bridge, "app_home", lambda: home):
+                self.assertEqual(bridge.accent_color(), "blue")
+
+    def test_a_grey_mark_would_not_be_a_mark(self):
+        """Grey is what every other group is wearing."""
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "shared.json").write_text(json.dumps({"browsr.accent": "grey"}))
+            with patch.object(bridge, "app_home", lambda: home):
+                self.assertEqual(bridge.accent_color(), "blue")
 
     def test_an_app_that_will_not_answer_is_not_a_user_with_no_spaces(self):
         """The extension reads an empty list as "say nothing" on purpose."""

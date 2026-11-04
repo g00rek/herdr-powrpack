@@ -38,6 +38,59 @@ const SKIP = "browsr.skip";
 // How often to ask the browser how it is doing, while the panel is open.
 const STATUS_EVERY = 4000;
 
+// Which group you are in, said in colour.
+//
+// Chromium paints a tab group in one of nine named colours and takes nothing
+// else — no hex — so the theme's accent cannot be handed to it. What it can
+// be is matched: these are the nine as Chromium actually paints them, and
+// the accent is answered with whichever is nearest. Change the Omarchy
+// theme and the mark moves with it, because Herdr's accent moves with it.
+const CHROME_COLORS = {
+  grey: "#5f6368",
+  blue: "#1a73e8",
+  red: "#d93025",
+  yellow: "#f9ab00",
+  green: "#1e8e3e",
+  pink: "#d01884",
+  purple: "#9334e6",
+  cyan: "#007b83",
+  orange: "#fa903e",
+};
+
+// Where the answer is left for bridge.py, which sends it to the browser on
+// every switch. The panel is the only part of Browsr that can see a theme,
+// and the button is on screen all day, so it is the one that keeps it true.
+const ACCENT = "browsr.accent";
+
+// What the groups wear at rest. A mark in the same colour is no mark, so
+// grey is never the answer however grey the accent is.
+const RESTING = "grey";
+
+const rgb = (hex) => {
+  const match = /^#?([0-9a-f]{6})$/i.exec(String(hex ?? "").trim());
+  if (!match) return null;
+  const n = parseInt(match[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
+
+/** The name of the Chromium colour closest to this one, never grey. */
+function nearestColor(hex) {
+  const want = rgb(hex);
+  if (!want) return null;
+  let best = null;
+  let near = Infinity;
+  for (const [name, value] of Object.entries(CHROME_COLORS)) {
+    if (name === RESTING) continue;
+    const have = rgb(value);
+    const d = (want[0] - have[0]) ** 2 + (want[1] - have[1]) ** 2 + (want[2] - have[2]) ** 2;
+    if (d < near) {
+      near = d;
+      best = name;
+    }
+  }
+  return best;
+}
+
 // Whether the panel is on screen, and when that last changed:
 // { open: boolean, changed: <ms> }. The button needs it to answer one
 // question — see `pressedWhileOpen` below.
@@ -82,6 +135,20 @@ export default class Browsr extends View {
 
   isButton() {
     return props()?.role === "button";
+  }
+
+  /**
+   * Leave the theme's accent where bridge.py can read it, as one of the nine
+   * names Chromium knows.
+   *
+   * Done while drawing, because that is when a mod is told the theme has
+   * changed, and written only when the answer is a different one: the store
+   * is shared, and a write that says nothing new would wake every panel
+   * reading it.
+   */
+  publishAccent() {
+    const name = nearestColor(theme().accent);
+    if (name && shared(ACCENT) !== name) setShared(ACCENT, name);
   }
 
   /** The projects that have a browser, as { [id]: true }. */
@@ -138,20 +205,6 @@ export default class Browsr extends View {
     });
   }
 
-  /** How many projects have no browser right now. */
-  offCount() {
-    const on = this.browsers();
-    return spaces().filter((space) => on[space.id] !== true).length;
-  }
-
-  /** Give every project a browser group. */
-  allOn(cx) {
-    const map = {};
-    for (const space of spaces()) map[space.id] = true;
-    setShared(ON, map);
-    this.act(cx, "sync", "every project on");
-  }
-
   /** Turn Browsr on or off for one space, and let the strip follow at once. */
   toggle(cx, space) {
     const chosen = { ...this.browsers() };
@@ -161,29 +214,47 @@ export default class Browsr extends View {
     this.act(cx, "sync", "match");
   }
 
-  /** The state in one line, in the person's words, not the machinery's. */
-  words() {
-    if (this.note) return this.note;
-    if (!this.status) return "asking…";
-    if (!this.status.browser) return "not running";
-    if (!this.status.bridge) return "running, but its extension is not answering";
+  /**
+   * The state in one line, in the person's words, and the one thing that
+   * would put it right.
+   *
+   * Both come from here so that they can never disagree: no cheerful line
+   * beside a repair button, and no fault reported with nothing to press.
+   * `fix` is null when the line is not a complaint, or when the cure is
+   * already standing in the row.
+   */
+  state() {
+    const line = (words, fix = null) => ({ words, fix });
+    if (this.note) return line(this.note);
+    if (!this.status) return line("asking…");
+    if (!this.status.browser) return line("not running");
+    if (!this.status.bridge) return line("running, but its extension is not answering");
     // The browser outlives any one Herdr, and the part that follows your
     // spaces is a separate program. It can be gone while everything else
-    // looks fine, and then nothing moves when you switch.
-    if (this.status.following === false) return "running, but nothing is following your spaces";
+    // looks fine, and then nothing moves when you switch. Starting it again
+    // is what brings the follower back, and that button is always there.
+    if (this.status.following === false) return line("running, but nothing is following your spaces");
     // The commonest surprise by far: the project you are looking at is
     // turned off below, so switching to it moves nothing and the browser
     // keeps showing whatever came before. Silence looks exactly like a
-    // fault, so say it.
+    // fault, so say it. Nothing to repair — it is a choice, made in the
+    // list underneath.
     const here = focused()?.space;
-    if (here && this.browsers()[here] !== true) return "this project has no browser — nothing follows here";
+    if (here && this.browsers()[here] !== true) return line("this project has no browser — nothing follows here");
     const strip = this.status.strip ?? {};
-    if (strip.windows && strip.windows !== 1) return `${strip.windows} windows — there should be one`;
+    if (strip.windows && strip.windows !== 1) {
+      return line(`${strip.windows} windows — there should be one`, "resync");
+    }
     const groups = (strip.groups ?? []).length;
     const on = this.browsers();
     const wanted = spaces().filter((space) => on[space.id] === true).length;
-    if (groups !== wanted) return `${groups} groups, ${wanted} spaces want one`;
-    return `${groups} groups, one per space`;
+    if (groups !== wanted) return line(`${groups} groups, ${wanted} spaces want one`, "resync");
+    return line(`${groups} groups, one per space`);
+  }
+
+  /** Just the line, for the header. */
+  words() {
+    return this.state().words;
   }
 
   colour(t) {
@@ -194,6 +265,7 @@ export default class Browsr extends View {
 
   renderButton() {
     const t = theme();
+    this.publishAccent();
     return h_flex()
       .id("browsr-button")
       .size_full()
@@ -221,7 +293,9 @@ export default class Browsr extends View {
   render(cx) {
     if (this.isButton()) return this.renderButton();
     const t = theme();
+    this.publishAccent();
     const on = this.browsers();
+    const { words, fix } = this.state();
 
     // Each label names what it acts on, and says what will happen rather
     // than what the machinery is called. "match" on its own reads as a
@@ -287,37 +361,26 @@ export default class Browsr extends View {
           .gap(8)
           .child(div().size(8).rounded(4).bg(this.colour(t)))
           .child(div().text_color(t.foreground).child("Browsr"))
-          .child(div().flex_1().text_color(t.dim).child(this.words()))
+          .child(div().flex_1().text_color(t.dim).child(words))
       )
       .child(
-        // Wrapping, because the fifth button only appears sometimes and a
-        // row that silently runs past the edge hides it altogether.
+        // Two things you do to the browser itself, and nothing else. Every
+        // other command this panel once offered was either a repair for a
+        // state the line above now names, or a way to undo a decision the
+        // list below makes one project at a time.
         h_flex()
-          .flex_wrap()
           .gap(6)
           .child(action("show browser", "launch",
             "Bring the browser window forward. The only thing that starts it."))
-          .child(action("redo groups", "sync",
-            "Make the groups match this list: add what is missing, take away what is not wanted."))
-          .child(action("restart browser", "restart",
-            "Close it and start it again. The only way it reads a changed extension."))
-          .child(action("close browser", "quit",
-            "Quit the browser. The tabs come back when you show it again."))
-          // Only while something is off, and it says how much it will undo.
-          .when(this.offCount() > 0, (el) => el.child(
-            div()
-              .id("browsr-all-on")
-              .px(9).py(3).rounded(5)
-              .bg(t.surface)
-              .text_color(this.working === "every project on" ? t.dim : t.foreground)
-              .hover((s) => s.bg(t.hover))
-              .tooltip("Give all of them a browser group again.")
-              .on_click((_event, cx) => this.allOn(cx))
-              .child(this.working === "every project on"
-                ? "…" : `turn on ${this.offCount()} off`)))
-          .child(action("take over old groups", "adopt",
-            "Once, after moving from the Herdr that runs in a terminal: "
-            + "the groups it still owns are taken over instead of being made again beside them."))
+          .child(action("restart", "restart",
+            "Close the browser and start it again. Brings back whatever stopped "
+            + "following, and the only way it reads a changed extension."))
+          // Only when something is actually wrong, saying what it will do
+          // about the line above. Standing there in the quiet, it would be
+          // one more thing to wonder about.
+          .when(fix !== null, (el) => el.child(action(fix, "sync",
+            "Make the groups match the list below: add the missing ones, "
+            + "take away the ones nothing wants.")))
       )
       .child(div().text_color(t.dim).text_size(11).child("A browser group for:"))
       .child(v_flex().gap(1).children(spaces().map(row)));
