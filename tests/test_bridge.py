@@ -951,6 +951,61 @@ class BridgeTests(unittest.TestCase):
             with patch.object(bridge, "app_home", lambda: home):
                 self.assertEqual(bridge.spaces_with_a_browser(["sp1", "sp2"]), {"sp1"})
 
+    def _home_with(self, directory, shared):
+        home = Path(directory)
+        (home / "shared.json").write_text(json.dumps(shared))
+        return home
+
+    def test_browsr_is_on_unless_the_panel_says_off(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = self._home_with(directory, {})
+            with patch.object(bridge, "app_home", lambda: home):
+                self.assertTrue(bridge.browsr_switched_on())
+            (home / "shared.json").write_text(json.dumps({"powr.modules": {"spacr": False}}))
+            with patch.object(bridge, "app_home", lambda: home):
+                self.assertTrue(bridge.browsr_switched_on())
+            (home / "shared.json").write_text(json.dumps({"powr.modules": {"browsr": False}}))
+            with patch.object(bridge, "app_home", lambda: home):
+                self.assertFalse(bridge.browsr_switched_on())
+
+    def test_switched_off_nothing_starts_the_browser_or_a_watcher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = self._home_with(directory, {"powr.modules": {"browsr": False}})
+            with patch.object(bridge, "app_home", lambda: home), \
+                    patch.object(bridge, "ensure_browser") as ensure, \
+                    patch.object(bridge, "sync_workspaces") as sync, \
+                    patch.object(bridge.subprocess, "Popen") as popen, \
+                    patch.object(bridge, "herdr_host", return_value="app"):
+                for command in (bridge.launch, bridge.sync_and_follow, bridge.start_watcher):
+                    with self.assertRaises(RuntimeError) as caught:
+                        command()
+                    self.assertEqual(str(caught.exception), bridge.BROWSR_OFF)
+                ensure.assert_not_called()
+                sync.assert_not_called()
+                popen.assert_not_called()
+
+    def test_switched_off_an_agent_is_refused_without_a_question(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                tempfile.TemporaryDirectory() as state:
+            home = self._home_with(directory, {"powr.modules": {"browsr": False}})
+            ask = Path(state) / "ask.json"
+            with patch.object(bridge, "app_home", lambda: home), \
+                    patch.object(bridge, "ASK_FILE", ask), \
+                    patch.object(bridge, "ensure_browser") as ensure:
+                with self.assertRaises(RuntimeError) as caught:
+                    bridge.ask_extension("open_url", "sp1", "could not open",
+                                         url="http://localhost:3000")
+            self.assertEqual(str(caught.exception), bridge.BROWSR_OFF)
+            self.assertFalse(ask.exists())
+            ensure.assert_not_called()
+
+    def test_off_quits_the_browser_and_every_watcher(self):
+        with patch.object(bridge, "stop_watchers") as watchers, \
+                patch.object(bridge, "quit_browser", return_value=1) as quit_:
+            bridge.switch_off()
+        watchers.assert_called_once()
+        quit_.assert_called_once()
+
     def test_the_group_you_are_in_is_the_only_one_wearing_a_colour(self):
         """Twelve grey groups and one marked. The mark rides along with the
         list itself, so there is no moment where it has been greyed and the

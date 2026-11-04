@@ -343,6 +343,25 @@ def app_shared():
         return {}
 
 
+# Which of the pack's modules are switched on, set in the Powr panel. A
+# module not named in it is on: the pack works fully before anyone opens
+# the panel.
+MODULES_KEY = "powr.modules"
+BROWSR_OFF = "Browsr is switched off in the Powr panel."
+
+
+def browsr_switched_on():
+    modules = app_shared().get(MODULES_KEY)
+    if not isinstance(modules, dict):
+        return True
+    return modules.get("browsr") is not False
+
+
+def refuse_when_switched_off():
+    if not browsr_switched_on():
+        raise RuntimeError(BROWSR_OFF)
+
+
 def skipped_spaces():
     """The old list: spaces turned off, back when everything had a browser."""
     chosen = app_shared().get(SKIP_KEY)
@@ -855,6 +874,7 @@ def start_watcher():
     too. Spawning a second one is harmless: they take a lock, and the loser
     exits at once.
     """
+    refuse_when_switched_off()
     if herdr_host() != "app":
         return
     try:
@@ -877,6 +897,7 @@ def sync_and_follow():
     the tabs stopped following should not also have to know that a separate
     process does the following.
     """
+    refuse_when_switched_off()
     sync_workspaces()
     start_watcher()
 
@@ -919,6 +940,7 @@ def restart_browser():
     list retired an hour later — for five hours, through a browser restart.
     Restart means all of Browsr runs today's code.
     """
+    refuse_when_switched_off()
     stop_watchers()
     quit_browser()
     deadline = time.monotonic() + 10
@@ -931,7 +953,15 @@ def print_quit():
     print("Browsr closed." if quit_browser() else "Browsr was not running anyway.")
 
 
+def switch_off():
+    """What the Powr panel runs when Browsr is switched off: nothing of it
+    keeps running, and nothing starts it again until it is switched on."""
+    stop_watchers()
+    quit_browser()
+
+
 def launch():
+    refuse_when_switched_off()
     outcome = ensure_browser(show=True, sync=True, may_launch=True)
     start_watcher()
     return outcome
@@ -1535,6 +1565,7 @@ def ask_extension(kind, workspace_id, failure, **extra):
             "No workspace to act on; run this from inside a Herdr pane, or "
             "from a terminal the Herdr app started"
         )
+    refuse_when_switched_off()
     if kind in ("open_url", "open_tab"):
         ask_to_switch_on(workspace_id, extra.get("url"))
     ensure_browser(show=False)
@@ -1635,12 +1666,12 @@ def main():
         open_tab(sys.argv[2])
         return
     if len(sys.argv) != 2 or sys.argv[1] not in {
-        "setup", "launch", "restart", "quit", "sync", "adopt", "status",
+        "setup", "launch", "restart", "off", "quit", "sync", "adopt", "status",
         "panel", "cleanup", "watch", "hook", "open-link", "workspace-tabs",
         "mcp-endpoint",
     }:
         raise RuntimeError(
-            "Usage: bridge.py setup|launch|restart|quit|sync|adopt|status"
+            "Usage: bridge.py setup|launch|restart|off|quit|sync|adopt|status"
             "|panel|cleanup|watch"
             "|hook|open-link|open-url URL|open-tab URL|workspace-tabs|mcp-endpoint"
         )
@@ -1654,6 +1685,7 @@ def main():
         "watch": watch_health,
         "launch": launch,
         "restart": restart_browser,
+        "off": switch_off,
         "quit": print_quit,
         "hook": hook,
         "open-link": open_link,
