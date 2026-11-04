@@ -95,6 +95,10 @@ const ON = "browsr.on";
 // to carry the choices already made over to the list the other way round.
 const SKIP = "browsr.skip";
 
+// The pack's module switches, set in the Powr panel. Browsr is on unless it
+// says otherwise.
+const MODULES = "powr.modules";
+
 // Where Browsr leaves a question and reads the answer. A file, because the
 // two are different programs: one is a mod in this window, the other is a
 // script an agent runs in a terminal somewhere else.
@@ -199,6 +203,12 @@ export default class PowrSpaces extends View {
 		cx.notify();
 	}
 
+	/** Whether Browsr is switched on in the Powr panel. */
+	browsrOn() {
+		const modules = shared(MODULES);
+		return !(modules && typeof modules === "object" && modules.browsr === false);
+	}
+
 	/**
 	 * Look for a question Browsr has left, and put it on screen.
 	 *
@@ -206,6 +216,7 @@ export default class PowrSpaces extends View {
 	 * watch would wake on everything else Browsr writes in there.
 	 */
 	pickUpQuestion(cx) {
+		if (!this.browsrOn()) return;
 		cx.spawn(async (cx) => {
 			let asked;
 			try {
@@ -720,7 +731,7 @@ export default class PowrSpaces extends View {
 			// The browser mark. Lit when this project has a group of tabs of its
 			// own, barely there when it has not, and a press is the switch — the
 			// whole reason this list is ours.
-			.child(
+			.when(this.browsrOn(), (el) => el.child(
 				h_flex()
 					.id(`powr-browser-${space.id}`)
 					.size(20)
@@ -741,7 +752,7 @@ export default class PowrSpaces extends View {
 					// important thing on it.
 					.child(svg("mods/spacr/browser.svg").size(13)
 						.text_color(on ? t.foreground : t.border))
-			);
+			))
 	}
 
 	/**
@@ -1117,7 +1128,7 @@ export default class PowrSpaces extends View {
 			.child(
 				h_flex().px(14).items_center().gap(4)
 					.child(div().flex_1().text_size(11).text_color(t.dim).child("spaces"))
-					.when(off > 0, (el) => el.child(
+					.when(off > 0 && this.browsrOn(), (el) => el.child(
 						div().text_size(10.5).text_color(t.dim).child(`${off} without a browser`)))
 					.child(button("powr-new-folder",
 						svg("mods/spacr/folder.svg").size(12), "New folder",
