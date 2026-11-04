@@ -410,15 +410,22 @@ export default class PowrSpaces extends View {
 			// project above it, not a project of its own.
 			.when(Boolean(mark), (el) =>
 				el.child(div().flex_none().w(10).text_size(11).text_color(t.border).child(mark)))
+			// A project wears a filled tile; a branch beside it wears the same
+			// letter in the same colour with nothing around it. Same colour
+			// says they belong together, the box says which one is the
+			// project — and at this size a filled box is the loudest thing
+			// in the row, so taking it away is what makes the branch read as
+			// subordinate.
 			.child(
 				h_flex()
 					.size(18)
 					.flex_none()
-					.rounded(5)
 					.items_center()
 					.justify_center()
-					.bg(this.colorOf(space, from))
-					.child(div().text_size(11).text_color("#ffffff").child(letter))
+					.when(!from, (el) => el.rounded(5).bg(this.colorOf(space, null)))
+					.child(div().text_size(11)
+						.text_color(from ? this.colorOf(space, from) : "#ffffff")
+						.child(letter))
 			)
 			.child(
 				v_flex()
