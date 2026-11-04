@@ -752,7 +752,7 @@ export default class PowrSpaces extends View {
 					// important thing on it.
 					.child(svg("mods/spacr/browser.svg").size(13)
 						.text_color(on ? t.foreground : t.border))
-			))
+			));
 	}
 
 	/**
