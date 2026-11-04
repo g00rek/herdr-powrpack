@@ -111,9 +111,10 @@ export default class PowrSpaces extends View {
 	init(_props, cx) {
 		// One mod, several roles: the list; the question it puts on screen
 		// when Browsr finds a project switched off; and the two popups the
-		// list opens at the pointer — how a project or a folder looks (a
-		// left press on its icon), and a folder's own menu (a right press on
-		// it, the way a right press on a project gives Herdr's).
+		// list opens at the pointer on a right press — a project's icon menu
+		// (colour and glyph; the rest of the row keeps Herdr's own menu), and
+		// a folder's one menu (name, colour, glyph, delete). A left press
+		// only ever selects a project or folds a folder.
 		this.ask = props()?.ask ?? null;
 		if (this.ask) {
 			cx.notify();
@@ -129,6 +130,8 @@ export default class PowrSpaces extends View {
 			this.name = InputState.new({ placeholder: "Folder" });
 			this.name.set_value(folder?.name ?? "");
 			this.name.on("submit", (_event, cx) => this.renameAndClose(cx));
+			// Clicking a colour after typing a name keeps the name.
+			this.name.on("blur", (_event, cx) => this.rename(cx));
 			this.name.focus();
 			cx.notify();
 			return;
@@ -644,11 +647,13 @@ export default class PowrSpaces extends View {
 					.items_center()
 					.justify_center()
 					.cursor_pointer()
-					.tooltip("Colour and glyph")
-					.on_mouse_down("left", (_event, cx) => cx.stop_propagation())
-					.on_click((_event, cx) => {
+					.tooltip("Right-click: colour and glyph")
+					// A right press here is the icon's own menu, and stops
+					// before the row's — which is Herdr's. A left press is
+					// not caught at all: it selects, like anywhere on the row.
+					.on_mouse_down("right", (_event, cx) => {
 						cx.stop_propagation();
-						this.openLook("space", space.id, from?.name ?? null);
+						this.openLook(space.id, from?.name ?? null);
 					})
 					.when(!from, (el) => el.bg(this.colorOf(space, null)))
 					.when(Boolean(from), (el) =>
@@ -762,8 +767,10 @@ export default class PowrSpaces extends View {
 			// be another mod to install and keep.
 			.on_mouse_down("right", (_event, cx) => {
 				cx.stop_propagation();
+				const rows = Math.ceil(ICONS.length / GLYPHS_PER_ROW);
 				openOverlay({
-					mod: "powr-spaces", kind: "popup", width: 220, height: 104,
+					mod: "powr-spaces", kind: "popup", width: 264,
+					height: 30 + 36 + 36 + rows * 29 + 10 + 36,
 					props: { role: "folder", id: folder.id },
 				});
 			})
@@ -775,12 +782,6 @@ export default class PowrSpaces extends View {
 					.id(`powr-folder-tile-${folder.id}`)
 					.size(22).flex_none().items_center().justify_center()
 					.cursor_pointer()
-					.tooltip("Colour and glyph")
-					.on_mouse_down("left", (_event, cx) => cx.stop_propagation())
-					.on_click((_event, cx) => {
-						cx.stop_propagation();
-						this.openLook("folder", folder.id, null);
-					})
 					.child(svg(folder.icon
 						? `mods/powr-spaces/icons/${folder.icon}.svg`
 						: "mods/powr-spaces/folder.svg").size(19).text_color(tint))
@@ -827,13 +828,12 @@ export default class PowrSpaces extends View {
 	 * moved under the list to stop that — opened somewhere far from the row
 	 * it was about.
 	 */
-	openLook(kind, id, from) {
-		const count = kind === "folder" ? ICONS.length : SPACE_ICONS.length;
-		const rows = Math.ceil(count / GLYPHS_PER_ROW);
-		const height = 30 + (from ? 26 : 36) + rows * 29 + 10 + (kind === "space" ? 36 : 0);
+	openLook(id, from) {
+		const rows = Math.ceil(SPACE_ICONS.length / GLYPHS_PER_ROW);
 		openOverlay({
-			mod: "powr-spaces", kind: "popup", width: 264, height,
-			props: { role: "look", kind, id, from },
+			mod: "powr-spaces", kind: "popup", width: 264,
+			height: 30 + (from ? 26 : 36) + rows * 29 + 10 + 36,
+			props: { role: "look", id, from },
 		});
 	}
 
@@ -906,8 +906,15 @@ export default class PowrSpaces extends View {
 		]);
 	}
 
-	folderControls(t, folder) {
-		return this.box(t, folder.name, [
+	/** A folder's one menu: its name, its colour, its glyph, and Delete. */
+	renderFolderMenu(t) {
+		const id = props()?.id;
+		const folder = this.folders().list.find((f) => f.id === id);
+		if (!folder) return div();
+		return this.box(t, "Folder", [
+			h_flex().h(28).mx(4).px(6).items_center().rounded(6)
+				.border_1().border_color(t.accent)
+				.child(Input.new(this.name).h_full().text_size(12).text_color(t.foreground)),
 			this.swatches(t, { key: `f-${folder.id}`, color: folder.color ?? null },
 				(pick, cx) => this.paintFolder(folder.id, pick, cx)),
 			this.glyphs(t, {
@@ -918,16 +925,7 @@ export default class PowrSpaces extends View {
 				tint: t.foreground,
 				pick: (name, cx) => this.wearIcon(folder.id, name, cx),
 			}),
-		]);
-	}
-
-	/** A folder's own menu: its name, and the way to be rid of it. */
-	renderFolderMenu(t) {
-		const id = props()?.id;
-		return this.box(t, "Folder", [
-			h_flex().h(28).mx(4).px(6).items_center().rounded(6)
-				.border_1().border_color(t.accent)
-				.child(Input.new(this.name).h_full().text_size(12).text_color(t.foreground)),
+			div().h(1).mx(6).my(2).bg(t.border),
 			this.item(t, `powr-folder-delete-${id}`, "Delete folder", (_event, cx) => {
 				this.deleteFolder(id, cx);
 				closeOverlay(props().overlay);
@@ -935,21 +933,24 @@ export default class PowrSpaces extends View {
 		]);
 	}
 
-	renameAndClose(cx) {
+	rename(cx) {
 		const id = props()?.id;
 		const typed = this.name.value().trim();
 		const { list, of } = this.folders();
-		if (typed) this.save({ of, list: list.map((f) => (f.id === id ? { ...f, name: typed } : f)) });
-		closeOverlay(props().overlay);
+		const now = list.find((f) => f.id === id);
+		if (typed && now && now.name !== typed) {
+			this.save({ of, list: list.map((f) => (f.id === id ? { ...f, name: typed } : f)) });
+		}
 		cx.notify();
 	}
 
+	renameAndClose(cx) {
+		this.rename(cx);
+		closeOverlay(props().overlay);
+	}
+
 	renderLook(t) {
-		const { kind, id } = props() ?? {};
-		if (kind === "folder") {
-			const folder = this.folders().list.find((f) => f.id === id);
-			return folder ? this.folderControls(t, folder) : div();
-		}
+		const { id } = props() ?? {};
 		const space = spaces().find((other) => other.id === id);
 		return space ? this.spaceControls(t, space) : div();
 	}
