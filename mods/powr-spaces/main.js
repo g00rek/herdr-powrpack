@@ -1071,33 +1071,16 @@ export default class PowrSpaces extends View {
 			body.child(card);
 		}
 
-		// Somewhere to drop a project that is in a folder, to take it out
-		// again. Only while one is being dragged, and only while it is in one:
-		// otherwise it is a strip of nothing across the list.
-		const held = this.pressed ? all.find((space) => space.id === this.pressed) : null;
-		if (held && folderOf(held)) {
-			const out = this.over && this.over.kind === "out";
-			body.child(
-				h_flex()
-					.id("powr-out")
-					.h(22)
-					.my(2)
-					.items_center()
-					.justify_center()
-					.rounded(6)
-					.border_1()
-					.border_color(out ? t.accent : t.border)
-					.text_size(11)
-					.text_color(out ? t.foreground : t.dim)
-					.on_mouse_move((_event, cx) => this.hover("out", "out", cx))
-					.on_mouse_up("left", (_event, cx) => this.drop(cx))
-					.child("out of its folder")
-			);
-		}
-
 		for (const node of this.tree(all.filter((space) => !inFolder(space)))) {
 			body.child(this.group(t, node, here, 0));
 		}
+		// The empty list below the last project is outside every folder, so a
+		// project dropped there leaves its folder — the way a file dropped
+		// beside the folders in a file manager does. Dropping it onto a loose
+		// project does the same and also puts it in that place.
+		body.child(div().id("powr-loose").flex_1().min_h(32)
+			.on_mouse_move((_event, cx) => this.hover("out", "out", cx))
+			.on_mouse_up("left", (_event, cx) => this.drop(cx)));
 
 		const chosen = this.browsers();
 		const off = all.filter((space) => chosen[space.id] !== true).length;
