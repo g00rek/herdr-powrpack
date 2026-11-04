@@ -778,7 +778,7 @@ export default class PowrSpaces extends View {
 			// which are the thing that is supposed to be read first.
 			h_flex()
 					.id(`powr-folder-tile-${folder.id}`)
-					.size(18).flex_none().items_center().justify_center()
+					.size(22).flex_none().items_center().justify_center()
 					.cursor_pointer()
 					.tooltip("Colour and glyph")
 					.on_mouse_down("left", (_event, cx) => cx.stop_propagation())
@@ -790,7 +790,7 @@ export default class PowrSpaces extends View {
 					})
 					.child(svg(folder.icon
 						? `mods/powr-spaces/icons/${folder.icon}.svg`
-						: "mods/powr-spaces/folder.svg").size(15).text_color(tint))
+						: "mods/powr-spaces/folder.svg").size(19).text_color(tint))
 			);
 
 		if (this.editing === folder.id) {
