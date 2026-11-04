@@ -984,7 +984,7 @@ export default class PowrSpaces extends View {
 			// on it carry their own colours too.
 			const tint = folder.color ? (MARK[folder.color] ?? folder.color) : t.foreground;
 			const card = v_flex().gap(1).rounded(6)
-				.when(/^#[0-9a-f]{6}$/i.test(tint), (el) => el.bg(`${tint}14`))
+				.when(/^#[0-9a-f]{6}$/i.test(tint), (el) => el.bg(`${tint}22`))
 				.child(this.folderHead(t, folder, inside));
 			if (!folder.folded && inside.length) {
 				const box = v_flex().gap(1).pb(2).pl(8);
