@@ -1,0 +1,5 @@
+{
+  "place": "none",
+  "title": "Powr",
+  "overlay": { "kind": "popup", "at": { "x": 99999, "y": 46 }, "width": 720, "height": 480 }
+}
