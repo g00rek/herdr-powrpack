@@ -35,7 +35,7 @@ The browser half of Browsr does not care which Herdr is in front:
 | `herdr workspace list` | `herdr-app ls` (JSON: id, name, folder, machine, active) |
 | `panel.py` in a Herdr pane | a mod panel in JavaScript |
 | `[[link_handlers]]` for localhost URLs | no equivalent found |
-| `herdr plugin install g00rek/browsr` | copy `mods/browsr/` into the app home |
+| `herdr plugin install g00rek/browsr` | copy `mods/powr/` and `mods/spacr/` into the app home |
 | topic `herdr-plugin`, herdr.dev/plugins | topic `herdr-mod`, herdr.dev/mods |
 
 ## The mechanism the port rests on
@@ -73,15 +73,16 @@ at one. So:
   on the other ninety-seven ticks.
 - `launch` starts that watcher, because the app has no startup hook. A second
   one exits on the lock.
-- `mods/browsr/` is the panel only: `place: none` and a popup, the shape
-  `picker` and `machine-add` use. `keys.json` suggests `alt-b`.
+- `mods/powr/` is a button in the top right plus the control panel (`place:
+  none` and a popup, the shape `picker` and `machine-add` use); `alt-b`
+  opens the Powr panel. `mods/spacr/` is the project list.
 - `bridge.py --app` / `--tui` pins which Herdr is being asked. The app runs
   programs in the person's own environment, where nothing says which Herdr
   is calling, and guessing wrong is destructive.
 
 ## Shape of the port
 
-1. `mods/browsr/main.js` + `mod.json` in the repo, copied into the app home.
+1. `mods/powr/main.js` + `mod.json` (and `mods/spacr/`) in the repo, copied into the app home.
    It watches `focused().space`, and on a change calls
    `exec("<browsr>/bridge.py", ["focus", id, name])`. It also draws the panel
    that `panel.py` draws today: browser up, link answering, extension fresh,

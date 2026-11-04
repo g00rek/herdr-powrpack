@@ -984,6 +984,16 @@ class BridgeTests(unittest.TestCase):
                 sync.assert_not_called()
                 popen.assert_not_called()
 
+    def test_switched_off_ensure_browser_refuses_before_any_setup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = self._home_with(directory, {"powr.modules": {"browsr": False}})
+            with patch.object(bridge, "app_home", lambda: home), \
+                    patch.object(bridge, "setup") as setup:
+                with self.assertRaises(RuntimeError) as caught:
+                    bridge.ensure_browser()
+            self.assertEqual(str(caught.exception), bridge.BROWSR_OFF)
+            setup.assert_not_called()
+
     def test_switched_off_an_agent_is_refused_without_a_question(self):
         with tempfile.TemporaryDirectory() as directory, \
                 tempfile.TemporaryDirectory() as state:
@@ -1258,7 +1268,7 @@ class BridgeTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as refused:
                     bridge.ask_extension("open_url", "sp9", "nope", url="http://localhost:3000")
             self.assertIn("switched off", str(refused.exception))
-            self.assertIn("alt-b", str(refused.exception), "said no without saying where the switch is")
+            self.assertIn("browser mark", str(refused.exception), "said no without saying where the switch is")
 
     def test_reading_the_tabs_of_a_project_that_is_off_is_still_allowed(self):
         """Only making a group is refused. Asking what is there takes nothing

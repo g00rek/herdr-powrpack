@@ -1057,7 +1057,7 @@ def health_step(state, now):
                 "--body",
                 "The browser is running but its extension is not answering, so "
                 "tab groups no longer follow the workspace. Restart it from the "
-                "Browsr panel.",
+                "Powr panel.",
                 "--sound", "request",
             )
         except (OSError, RuntimeError, subprocess.SubprocessError):
@@ -1366,6 +1366,9 @@ def ensure_browser(show=False, sync=False, may_launch=False):
     starts with every agent session — used to start it, which meant the browser
     turned up on its own whenever a session happened to begin.
     """
+    if not browsr_switched_on():
+        raise RuntimeError(BROWSR_OFF)
+
     chromium = setup()
     if not bridge_alive():
         if not may_launch and not browser_alive():
@@ -1465,7 +1468,7 @@ ANSWER_FILE = STATE_DIR / "answer.json"
 ASK_SECONDS = 20
 SWITCHED_OFF = (
     "Browsr is switched off for this project; its tabs would be taken away "
-    "again at the next switch. Turn it on in the Browsr panel (alt-b) or in "
+    "again at the next switch. Turn it on with the browser mark on its row in "
     "the project list, then try again"
 )
 

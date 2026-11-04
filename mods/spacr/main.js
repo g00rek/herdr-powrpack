@@ -99,16 +99,9 @@ const SKIP = "browsr.skip";
 // says otherwise.
 const MODULES = "powr.modules";
 
-// Where Browsr leaves a question and reads the answer. A file, because the
-// two are different programs: one is a mod in this window, the other is a
-// script an agent runs in a terminal somewhere else.
 // Browsr's own command, for the one thing this list changes that lives
 // outside Herdr. Change this line if your checkout is elsewhere.
 const BRIDGE = `${home()}/Projects/browsr/bridge.py`;
-const BROWSR_STATE = `${home()}/.local/state/herdr-dev-browser`;
-const ASK = `${BROWSR_STATE}/ask.json`;
-const ANSWER = `${BROWSR_STATE}/answer.json`;
-const ASK_EVERY = 1000;
 
 // Branches worth printing under a name. Almost every project sits on its
 // trunk, so printing it on every row costs a second line each and tells you
@@ -138,17 +131,11 @@ function glyph(status) {
 
 export default class PowrSpaces extends View {
 	init(_props, cx) {
-		// One mod, several roles: the list; the question it puts on screen
-		// when Browsr finds a project switched off; and the two popups the
+		// One mod, several roles: the list; and the two popups the
 		// list opens at the pointer on a right press — a project's icon menu
 		// (colour and glyph; the rest of the row keeps Herdr's own menu), and
 		// a folder's one menu (name, colour, glyph, delete). A left press
 		// only ever selects a project or folds a folder.
-		this.ask = props()?.ask ?? null;
-		if (this.ask) {
-			cx.notify();
-			return;
-		}
 		this.role = props()?.role ?? null;
 		if (this.role === "look") {
 			this.query = "";
@@ -180,8 +167,6 @@ export default class PowrSpaces extends View {
 			return;
 		}
 		this.seedBrowsers();
-		this.answered = null; // the id of the last question dealt with
-		cx.timer.every(ASK_EVERY, (cx) => this.pickUpQuestion(cx));
 		this.seedFolders();
 		// Renaming reuses one text field: only one folder is ever being
 		// renamed, and a field per folder would keep as many alive.
@@ -207,84 +192,6 @@ export default class PowrSpaces extends View {
 	browsrOn() {
 		const modules = shared(MODULES);
 		return !(modules && typeof modules === "object" && modules.browsr === false);
-	}
-
-	/**
-	 * Look for a question Browsr has left, and put it on screen.
-	 *
-	 * Polled rather than watched: one small file once a second, where a folder
-	 * watch would wake on everything else Browsr writes in there.
-	 */
-	pickUpQuestion(cx) {
-		if (!this.browsrOn()) return;
-		cx.spawn(async (cx) => {
-			let asked;
-			try {
-				const text = await readTextFile(ASK);
-				asked = text ? JSON.parse(text) : null;
-			} catch {
-				return;
-			}
-			if (!asked || !asked.id || asked.id === this.answered) return;
-			// Stale: Browsr gives up after twenty seconds, and a question
-			// nobody is waiting on should not appear.
-			if (asked.at && Date.now() / 1000 - asked.at > 25) return;
-			this.answered = asked.id;
-			openOverlay({ mod: "spacr", kind: "dialog", width: 430, props: { ask: asked } });
-			cx.notify();
-		});
-	}
-
-	/** Write the answer back, and turn the project on when it is yes. */
-	answer(yes, cx) {
-		const asked = this.ask;
-		if (yes) {
-			setShared(ON, { ...this.browsers(), [asked.space]: true });
-		}
-		cx.spawn(async () => {
-			try {
-				await writeTextFile(ANSWER, JSON.stringify({ id: asked.id, yes }), null);
-			} catch {
-				// Browsr gives up on its own; nothing here can do better.
-			}
-		});
-		const overlay = props()?.overlay;
-		if (overlay) closeOverlay(overlay);
-	}
-
-	renderAsk(t) {
-		const asked = this.ask;
-		const button = (id, label, filled, handler) =>
-			h_flex()
-				.id(id)
-				.h(30).px(14).items_center().rounded(7)
-				.cursor_pointer()
-				.border_1()
-				.border_color(filled ? t.accent : t.border)
-				.when(filled, (el) => el.bg(t.accent))
-				.text_color(filled ? t.background : t.foreground)
-				.hover((s) => s.opacity(0.88))
-				.on_click((_event, cx) => handler(cx))
-				.child(label);
-		return v_flex()
-			.id("powr-ask")
-			.size_full()
-			.p(18)
-			.gap(10)
-			.bg(t.popover)
-			.text_size(13)
-			.child(div().text_color(t.foreground).child(`Give ${asked.name} a browser?`))
-			.child(div().text_size(12).text_color(t.dim).child(
-				`Something in ${asked.name} wants to open a page, but this project is `
-				+ `switched off, so it has no tabs of its own. Turning it on gives it a `
-				+ `group in the Browsr window.`))
-			.when(Boolean(asked.url), (el) => el.child(
-				div().text_size(11).text_color(t.dim).truncate().child(asked.url)))
-			.child(
-				h_flex().gap(8).pt(4).justify_end()
-					.child(button("powr-ask-no", "Leave it off", false, (cx) => this.answer(false, cx)))
-					.child(button("powr-ask-yes", "Turn it on", true, (cx) => this.answer(true, cx)))
-			);
 	}
 
 	/**
@@ -1045,7 +952,6 @@ export default class PowrSpaces extends View {
 
 	render() {
 		const t = theme();
-		if (this.ask) return this.renderAsk(t);
 		if (this.role === "look") return this.renderLook(t);
 		if (this.role === "folder") return this.renderFolderMenu(t);
 		const here = focused()?.space;
