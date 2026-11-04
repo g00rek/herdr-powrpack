@@ -28,16 +28,16 @@ const HUES = Object.keys(MARK);
 // Our own folders, kept apart from the ones Herdr's list uses. Seeded from
 // those once, so the folders you already have are here on the first run, and
 // never written back: nothing we do can damage the list you can switch to.
-// The glyphs a folder can wear. Lucide, shipped with this mod under its own
-// licence, in its icons folder.
+// What a folder can wear. Every one of them is a folder — the shape says
+// "this holds projects" and nothing else should have to. They differ only in
+// the mark on the flap, which is the part that says which folder it is.
+// Lucide, shipped in this mod's own icons folder with the ISC licence.
 const ICONS = [
-	"folder", "banknote", "book", "graduation-cap", "pencil", "feather",
-	"braces", "terminal", "audio-lines", "popcorn", "scissors", "palette",
-	"stethoscope", "snowflake", "flower", "briefcase", "chart-column",
-	"dumbbell", "activity", "file-text", "scale", "lightbulb", "plane",
-	"globe", "wrench", "paw-print", "flask-conical", "brain", "heart",
-	"cake", "rocket", "bug", "database", "server", "shield", "camera",
-	"film", "gamepad-2", "mail", "phone",
+	"folder", "folder-code", "folder-git", "folder-git-2", "folder-kanban",
+	"folder-tree", "folder-archive", "folder-bookmark", "folder-check",
+	"folder-clock", "folder-cog", "folder-heart", "folder-key",
+	"folder-lock", "folder-pen", "folder-search", "folder-user",
+	"folder-users",
 ];
 
 const FOLDERS = "powr.folders";
@@ -84,14 +84,6 @@ export default class PowrSpaces extends View {
 		this.pressed = null; // the project under a held button, maybe a drag
 		this.over = null; // { kind: "space" | "folder" | "out", id }
 		this.dropped = false; // swallow the click that ends a drag
-		// What is typed in the icon search. One field, like the name: only
-		// one folder's controls are open at a time.
-		this.find = InputState.new({ placeholder: "Search icons" });
-		this.query = "";
-		this.find.on("change", (_event, cx) => {
-			this.query = this.find.value().trim().toLowerCase();
-			cx.notify();
-		});
 		this.name.on("submit", (_event, cx) => this.commitName(cx));
 		this.name.on("blur", (_event, cx) => this.commitName(cx));
 		// What repository each project's folder belongs to, and whether it is
@@ -553,12 +545,6 @@ export default class PowrSpaces extends View {
 				.hover((s) => s.bg(t.hover).text_color(t.foreground))
 				.on_click(handler)
 				.child(label);
-		// Searched by name, because forty glyphs is more than anyone scans.
-		// An empty search shows all of them, so the field is never the thing
-		// standing between you and the one you can already see.
-		const shown = this.query
-			? ICONS.filter((name) => name.includes(this.query))
-			: ICONS;
 		const tile = (name) =>
 			h_flex()
 				.id(`powr-icon-${folder.id}-${name}`)
@@ -568,34 +554,23 @@ export default class PowrSpaces extends View {
 				.items_center()
 				.justify_center()
 				.cursor_pointer()
-				.tooltip(name.replace(/-/g, " "))
-				.when(folder.icon === name, (el) => el.bg(t.selected))
+				.tooltip(name === "folder" ? "plain" : name.slice(7).replace(/-/g, " "))
+				.when((folder.icon ?? "folder") === name, (el) => el.bg(t.selected))
 				.hover((s) => s.bg(t.hover))
-				.on_click((_event, cx) => this.wearIcon(folder.id, name, cx))
+				.on_click((_event, cx) =>
+					this.wearIcon(folder.id, name === "folder" ? null : name, cx))
 				.child(svg(`mods/powr-spaces/icons/${name}.svg`).size(14)
-					.text_color(folder.icon === name ? t.accent : t.foreground));
+					.text_color((folder.icon ?? "folder") === name ? t.accent : t.foreground));
 		return v_flex()
 			.gap(5)
 			.px(8)
 			.py(5)
 			.on_mouse_down("left", (_event, cx) => cx.stop_propagation())
-			.child(
-				h_flex().items_center().gap(5)
-					.child(div().flex_1().min_w(0).h(22).px(6).rounded(5)
-						.border_1().border_color(t.border).cursor_text()
-						.child(Input.new(this.find).h_full().text_size(11).text_color(t.foreground)))
-					.child(word("clear", "clear-icon", (_event, cx) => {
-						this.find.set_value("");
-						this.query = "";
-						this.wearIcon(folder.id, null, cx);
-					}))
-			)
 			.child(h_flex().gap(5).items_center()
 				.child(swatch(null))
 				.children(HUES.map(swatch)))
 			.child(
-				h_flex().flex_wrap().gap(3).max_h(118).overflow_y_scrollbar().mode("always")
-					.children(shown.map(tile))
+				h_flex().flex_wrap().gap(3).children(ICONS.map(tile))
 			)
 			.child(
 				h_flex().items_center().gap(4)
