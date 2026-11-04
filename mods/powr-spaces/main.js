@@ -680,9 +680,11 @@ export default class PowrSpaces extends View {
 			.child(
 				h_flex()
 					.id(`powr-tile-${space.id}`)
-					.size(18)
+					// A project's tile is as large as a folder's icon, so the two
+					// stand in one column; a branch's stays small under it.
+					.size(from ? 18 : 22)
 					.flex_none()
-					.rounded(5)
+					.rounded(from ? 5 : 6)
 					.items_center()
 					.justify_center()
 					.cursor_pointer()
@@ -698,9 +700,9 @@ export default class PowrSpaces extends View {
 					.when(Boolean(from), (el) =>
 						el.border_1().border_color(this.colorOf(space, from)))
 					.child(icon
-						? svg(`mods/powr-spaces/icons/${icon}.svg`).size(11)
+						? svg(`mods/powr-spaces/icons/${icon}.svg`).size(from ? 11 : 14)
 							.text_color(from ? this.colorOf(space, from) : "#ffffff")
-						: div().text_size(11)
+						: div().text_size(from ? 11 : 13)
 							.text_color(from ? this.colorOf(space, from) : "#ffffff")
 							.child(letter))
 			)
