@@ -1,6 +1,6 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
-import { spaces, focused, theme, run, shared, setShared, openOverlay } from "herdr";
+import { spaces, panes, focused, theme, run, shared, setShared, openOverlay, exec } from "herdr";
 
 // The list of projects, drawn by us rather than by Herdr, so that things
 // Herdr knows nothing about can appear on a project's own row. The first of
@@ -40,6 +40,15 @@ const SKIP = "browsr.skip";
 // nothing; a branch is news only when it is not the trunk.
 const TRUNK = new Set(["main", "master", "trunk", "develop"]);
 
+// How often to look again for projects whose folder we have not asked about.
+const SCAN_EVERY = 20000;
+
+/** The last part of a path. */
+function base(path) {
+	const trimmed = path.replace(/\/+$/, "");
+	return trimmed.slice(trimmed.lastIndexOf("/") + 1);
+}
+
 /** A project with no colour of its own still gets a steady one. */
 function hue(id) {
 	let sum = 0;
@@ -65,7 +74,108 @@ export default class PowrSpaces extends View {
 		this.dropped = false; // swallow the click that ends a drag
 		this.name.on("submit", (_event, cx) => this.commitName(cx));
 		this.name.on("blur", (_event, cx) => this.commitName(cx));
+		// What repository each project's folder belongs to, and whether it is
+		// a branch checked out beside it. Asked of git once per folder and
+		// kept: it is what puts a worktree under the project it came from
+		// instead of loose in the list.
+		this.repos = {};
+		this.scanning = false;
+		this.scan(cx);
+		cx.timer.every(SCAN_EVERY, (cx) => this.scan(cx));
 		cx.notify();
+	}
+
+	/**
+	 * Where a project actually is, right now.
+	 *
+	 * Not the folder Herdr stores on it: that one only says where its *new*
+	 * terminals would start, and on a list that has been lived in for a while
+	 * it is wrong for most projects — it had this project pointing at the
+	 * neighbour's repository. What the terminal you are looking at is in is
+	 * the truth, and it is the thing that moves when you cd.
+	 */
+	cwdOf(space) {
+		const ids = new Set((space.tabs || []).map((tab) => tab.id));
+		const open = panes().filter((pane) => ids.has(pane.tab) && pane.cwd);
+		const active = (space.tabs || []).find((tab) => tab.active);
+		const first = (active && open.find((pane) => pane.tab === active.id)) || open[0];
+		return first?.cwd || space.folder || null;
+	}
+
+	/**
+	 * Ask git about the folders we have not asked about yet.
+	 *
+	 * One call per folder, never repeated: a project's folder does not move,
+	 * and the answer is only about where the folder sits, not what is in it.
+	 * The shared directory names the repository; a checkout whose own top is
+	 * not that directory's parent is a branch checked out beside it.
+	 */
+	scan(cx) {
+		if (this.scanning) return;
+		const todo = [];
+		for (const space of spaces()) {
+			const cwd = this.cwdOf(space);
+			if (cwd && !(cwd in this.repos)) todo.push({ space, cwd });
+		}
+		if (!todo.length) return;
+		this.scanning = true;
+		cx.spawn(async (cx) => {
+			for (const { space, cwd } of todo) {
+				try {
+					const r = await exec("git", [
+						"rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel",
+					], { cwd, on: space.machine ?? undefined });
+					const [common, top] = String(r.stdout || "").trim().split("\n");
+					if (r.code !== 0 || !common || !top) {
+						this.repos[cwd] = null;
+					} else {
+						this.repos[cwd] = {
+							repo: `${space.machine ?? ""}\u001f${common}`,
+							name: common.endsWith("/.git") ? base(common.slice(0, -5)) : base(common),
+							linked: common !== `${top}/.git`,
+						};
+					}
+				} catch {
+					// The machine is away. Leave it unasked so the next round
+					// tries again rather than drawing it as "not a repository".
+				}
+			}
+			this.scanning = false;
+			cx.notify();
+		});
+	}
+
+	/**
+	 * The projects in the order they are drawn: each one, then the branches
+	 * checked out beside it. A worktree belongs under the project it came
+	 * from — that is the thing it is a branch of — and nowhere else in the
+	 * list, however the order says otherwise.
+	 */
+	tree(list) {
+		const out = [];
+		const done = new Set();
+		const git = (space) => {
+			const cwd = this.cwdOf(space);
+			return (cwd ? this.repos[cwd] : null) ?? null;
+		};
+		for (const space of list) {
+			const info = git(space);
+			if (info && info.linked) continue; // drawn under its own project
+			out.push({ space, mark: null });
+			if (!info || done.has(info.repo)) continue;
+			done.add(info.repo);
+			const kids = list.filter((other) => {
+				const theirs = git(other);
+				return theirs && theirs.linked && theirs.repo === info.repo;
+			});
+			kids.forEach((kid, n) => out.push({ space: kid, mark: n === kids.length - 1 ? "└" : "├" }));
+		}
+		// A worktree whose own project is not in this list would vanish.
+		for (const space of list) {
+			if (out.some((row) => row.space.id === space.id)) continue;
+			out.push({ space, mark: null });
+		}
+		return out;
 	}
 
 	// ---- stored shape -------------------------------------------------
@@ -218,7 +328,7 @@ export default class PowrSpaces extends View {
 
 	// ---- drawing ------------------------------------------------------
 
-	row(t, space, inFront) {
+	row(t, space, inFront, mark) {
 		const on = !this.skipped()[space.id];
 		const letter = (space.name || "?").trim().charAt(0).toUpperCase() || "?";
 		const landing = this.over && this.over.kind === "space" && this.over.id === space.id;
@@ -263,6 +373,10 @@ export default class PowrSpaces extends View {
 					props: { tab: "space", target: { id: space.id } },
 				});
 			})
+			// The elbow that says this is a branch checked out beside the
+			// project above it, not a project of its own.
+			.when(Boolean(mark), (el) =>
+				el.child(div().flex_none().w(10).text_size(11).text_color(t.border).child(mark)))
 			.child(
 				h_flex()
 					.size(18)
@@ -278,7 +392,8 @@ export default class PowrSpaces extends View {
 					.flex_1()
 					.min_w(0)
 					.child(div().truncate().text_color(t.foreground).child(space.name))
-					.when(Boolean(space.branch) && !TRUNK.has(space.branch), (el) =>
+					.when(Boolean(space.branch) && !TRUNK.has(space.branch)
+						&& space.branch !== space.name, (el) =>
 						el.child(div().truncate().text_size(10.5).text_color(t.dim).child(space.branch)))
 			)
 			.when(Boolean(space.status), (el) =>
@@ -421,8 +536,9 @@ export default class PowrSpaces extends View {
 			body.child(this.folderHead(t, folder, inside));
 			if (this.menu === folder.id) body.child(this.folderControls(t, folder));
 			if (folder.folded) continue;
-			for (const space of inside) {
-				body.child(div().pl(14).child(this.row(t, space, space.id === here)));
+			for (const row of this.tree(inside)) {
+				body.child(div().pl(14).child(
+					this.row(t, row.space, row.space.id === here, row.mark)));
 			}
 		}
 
@@ -449,9 +565,8 @@ export default class PowrSpaces extends View {
 			);
 		}
 
-		for (const space of all) {
-			if (inFolder(space.id)) continue;
-			body.child(this.row(t, space, space.id === here));
+		for (const row of this.tree(all.filter((space) => !inFolder(space.id)))) {
+			body.child(this.row(t, row.space, row.space.id === here, row.mark));
 		}
 
 		const off = all.filter((space) => this.skipped()[space.id]).length;
