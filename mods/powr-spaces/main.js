@@ -701,12 +701,22 @@ export default class PowrSpaces extends View {
 			.on_mouse_up("left", (_event, cx) => {
 				if (this.pressed) this.drop(cx);
 			})
-			// A press anywhere but inside a folder's own controls closes them.
-			// They had no way out at all: right-clicking the folder again was
-			// the only one, and nothing on screen said so.
+			// A press anywhere but inside a folder's own controls closes them:
+			// elsewhere in this list, and — the second handler — anywhere
+			// else in the window at all, which is where a press that means
+			// "I am done with this" usually lands.
 			.on_mouse_down("left", (_event, cx) => {
 				if (this.menu === null) return;
 				this.menu = null;
+				cx.notify();
+			})
+			.on_mouse_down_out((_event, cx) => {
+				if (this.menu === null && this.editing === null) return;
+				this.menu = null;
+				// A name half typed is kept, not thrown away: it is the same
+				// as clicking off a field, which is how a rename is finished
+				// everywhere else.
+				if (this.editing !== null) this.commitName(cx);
 				cx.notify();
 			})
 			.child(
