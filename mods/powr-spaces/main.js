@@ -983,10 +983,15 @@ export default class PowrSpaces extends View {
 			// The number is projects, not rows: a project with three branches
 			// beside it is one thing you put in here, not four.
 			body.child(this.folderHead(t, folder, inside));
-			if (folder.folded) continue;
-			for (const node of inside) {
-				body.child(div().pl(14).child(this.group(t, node, here, 0)));
-			}
+			if (folder.folded || !inside.length) continue;
+			// What is in a folder sits on a faint wash of the folder's colour,
+			// so it reads as belonging to it rather than as more of the list.
+			// Faint, because the rows on it carry their own colours too.
+			const tint = folder.color ? (MARK[folder.color] ?? folder.color) : t.foreground;
+			const box = v_flex().gap(1).py(2).pl(8).rounded(6)
+				.when(/^#[0-9a-f]{6}$/i.test(tint), (el) => el.bg(`${tint}14`));
+			for (const node of inside) box.child(this.group(t, node, here, 0));
+			body.child(box);
 		}
 
 		// Somewhere to drop a project that is in a folder, to take it out
