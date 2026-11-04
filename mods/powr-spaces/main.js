@@ -619,18 +619,28 @@ export default class PowrSpaces extends View {
 		const block = v_flex().gap(1).child(this.row(t, space, space.id === here, null));
 		if (!kids.length) return block;
 		const line = this.colorOf(space, null);
-		// No padding between the rule and the stubs: with any, the stubs float
-		// clear of the line and read as a column of hyphens rather than as a
-		// tree. The gap before the row is made by the stub's own width.
-		const nest = v_flex().gap(1).ml(indent + 17).border_l_1().border_color(line);
-		for (const kid of kids) {
+		// Each row draws its own piece of the rule rather than the group
+		// drawing one down its whole side: that one ran past the last branch
+		// to the bottom of the group and pointed at the next project. Here
+		// the last row's piece stops at its own stub, which is what an elbow
+		// is. No gap between the rows either, or the pieces would not meet.
+		const nest = v_flex().gap(0).ml(indent + 17);
+		kids.forEach((kid, n) => {
+			const last = n === kids.length - 1;
 			nest.child(
-				h_flex().items_center()
-					.child(div().flex_none().w(11).h(1).bg(line))
+				h_flex().items_stretch()
+					.child(
+						v_flex().w(11).flex_none().items_start()
+							.child(div().w(1).flex_1().bg(line))
+							.child(div().w(11).h(1).flex_none().bg(line))
+							.child(last
+								? div().w(1).flex_1()
+								: div().w(1).flex_1().bg(line))
+					)
 					.child(div().flex_1().min_w(0)
 						.child(this.row(t, kid, kid.id === here, null, space)))
 			);
-		}
+		});
 		return block.child(nest);
 	}
 
