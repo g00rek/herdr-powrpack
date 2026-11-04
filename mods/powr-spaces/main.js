@@ -161,19 +161,23 @@ export default class PowrSpaces extends View {
 		for (const space of list) {
 			const info = git(space);
 			if (info && info.linked) continue; // drawn under its own project
-			out.push({ space, mark: null });
+			out.push({ space, mark: null, from: null });
 			if (!info || done.has(info.repo)) continue;
 			done.add(info.repo);
 			const kids = list.filter((other) => {
 				const theirs = git(other);
 				return theirs && theirs.linked && theirs.repo === info.repo;
 			});
-			kids.forEach((kid, n) => out.push({ space: kid, mark: n === kids.length - 1 ? "└" : "├" }));
+			kids.forEach((kid, n) => out.push({
+				space: kid,
+				mark: n === kids.length - 1 ? "└" : "├",
+				from: space,
+			}));
 		}
 		// A worktree whose own project is not in this list would vanish.
 		for (const space of list) {
 			if (out.some((row) => row.space.id === space.id)) continue;
-			out.push({ space, mark: null });
+			out.push({ space, mark: null, from: null });
 		}
 		return out;
 	}
@@ -209,7 +213,18 @@ export default class PowrSpaces extends View {
 		return chosen && typeof chosen === "object" ? chosen : {};
 	}
 
-	colorOf(space) {
+	/**
+	 * A project's colour. A branch checked out beside one takes its project's
+	 * colour rather than a colour of its own: the point of the tile is to say
+	 * at a glance which project you are in, and three worktrees of the same
+	 * repository in three different colours say the opposite.
+	 *
+	 * The stored colour is not consulted for a branch, because Herdr gives
+	 * every project one whether or not anyone chose it: honouring those put
+	 * three worktrees of one repository in three colours again.
+	 */
+	colorOf(space, from) {
+		if (from) return this.colorOf(from, null);
 		const stored = shared(HERDR_COLORS);
 		const named = stored && typeof stored === "object" ? stored[space.id] : null;
 		return MARK[named] ?? MARK[hue(space.id)];
@@ -328,7 +343,7 @@ export default class PowrSpaces extends View {
 
 	// ---- drawing ------------------------------------------------------
 
-	row(t, space, inFront, mark) {
+	row(t, space, inFront, mark, from) {
 		const on = !this.skipped()[space.id];
 		const letter = (space.name || "?").trim().charAt(0).toUpperCase() || "?";
 		const landing = this.over && this.over.kind === "space" && this.over.id === space.id;
@@ -384,7 +399,7 @@ export default class PowrSpaces extends View {
 					.rounded(5)
 					.items_center()
 					.justify_center()
-					.bg(this.colorOf(space))
+					.bg(this.colorOf(space, from))
 					.child(div().text_size(11).text_color("#ffffff").child(letter))
 			)
 			.child(
@@ -538,7 +553,7 @@ export default class PowrSpaces extends View {
 			if (folder.folded) continue;
 			for (const row of this.tree(inside)) {
 				body.child(div().pl(14).child(
-					this.row(t, row.space, row.space.id === here, row.mark)));
+					this.row(t, row.space, row.space.id === here, row.mark, row.from)));
 			}
 		}
 
@@ -566,7 +581,7 @@ export default class PowrSpaces extends View {
 		}
 
 		for (const row of this.tree(all.filter((space) => !inFolder(space.id)))) {
-			body.child(this.row(t, row.space, row.space.id === here, row.mark));
+			body.child(this.row(t, row.space, row.space.id === here, row.mark, row.from));
 		}
 
 		const off = all.filter((space) => this.skipped()[space.id]).length;
