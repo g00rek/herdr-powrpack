@@ -1103,6 +1103,42 @@ def take_watch_locks(health=None, focus=None):
     return following, True, handles
 
 
+# How often a watcher looks at its own source.
+SOURCE_CHECK_SECONDS = 2.0
+
+
+def source_stamp(path=None):
+    """When this file was last written, or None if it cannot be read."""
+    try:
+        return (path or Path(__file__).resolve()).stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def updated_source(born, path=None):
+    """Whether the file on disk is newer than the one this process runs,
+    and whole enough to run.
+
+    A watcher lives for days and Python reads its source once. A watcher
+    started at 16:56 was still matching the strip against a list retired at
+    17:21 five hours later: every switch shut the groups of projects turned
+    on since then and brought back one turned off, while every check from
+    outside, all of them running today's code, said the strip was right.
+
+    A save caught halfway is not a reason to restart into a broken file, so
+    it has to compile first; the next look catches the finished one.
+    """
+    path = path or Path(__file__).resolve()
+    stamp = source_stamp(path)
+    if stamp is None or stamp == born:
+        return False
+    try:
+        compile(path.read_text(), str(path), "exec")
+    except (OSError, SyntaxError, ValueError):
+        return False
+    return True
+
+
 def watch_health():
     """Run by Herdr at startup; one per machine, not one per session.
 
@@ -1121,8 +1157,18 @@ def watch_health():
     state = None
     space = app_focused_space()
     next_health = 0.0
+    born = source_stamp()
+    next_source = 0.0
     while True:
         now = time.monotonic()
+        if now >= next_source:
+            next_source = now + SOURCE_CHECK_SECONDS
+            if updated_source(born):
+                # Become the new code in place. The lock files are not
+                # inherited across exec, so they are let go and taken again
+                # by the process that comes back, a moment later.
+                os.execv(sys.executable,
+                         [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]])
         if not checking and now >= next_health:
             # Whoever was reporting on the browser may be gone — a Herdr shut
             # down for the day. Without this the job stays undone for as long

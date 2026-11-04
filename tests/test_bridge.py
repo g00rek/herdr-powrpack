@@ -996,6 +996,27 @@ class BridgeTests(unittest.TestCase):
             with patch.object(bridge, "app_home", lambda: home):
                 self.assertEqual(bridge.accent_color(), "blue")
 
+    def test_a_watcher_notices_its_own_code_has_changed(self):
+        """A follower started in the afternoon kept matching the strip against
+        a list retired an hour later, for five hours. It has to see that the
+        file under it is not the one it is running."""
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "bridge.py"
+            source.write_text("X = 1\n")
+            born = bridge.source_stamp(source)
+            self.assertFalse(bridge.updated_source(born, source))
+            os.utime(source, ns=(born + 10**9, born + 10**9))
+            self.assertTrue(bridge.updated_source(born, source))
+
+    def test_a_save_caught_halfway_is_not_restarted_into(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "bridge.py"
+            source.write_text("X = 1\n")
+            born = bridge.source_stamp(source)
+            source.write_text("def broken(:\n")
+            os.utime(source, ns=(born + 10**9, born + 10**9))
+            self.assertFalse(bridge.updated_source(born, source))
+
     def test_an_app_that_will_not_answer_is_not_a_user_with_no_spaces(self):
         """The extension reads an empty list as "say nothing" on purpose."""
         with patch.object(bridge, "app_cli", lambda: "/usr/bin/herdr-app"), \

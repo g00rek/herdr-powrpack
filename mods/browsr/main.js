@@ -245,11 +245,26 @@ export default class Browsr extends View {
     if (strip.windows && strip.windows !== 1) {
       return line(`${strip.windows} windows — there should be one`, "resync");
     }
-    const groups = (strip.groups ?? []).length;
-    const on = this.browsers();
-    const wanted = spaces().filter((space) => on[space.id] === true).length;
-    if (groups !== wanted) return line(`${groups} groups, ${wanted} spaces want one`, "resync");
-    return line(`${groups} groups, one per space`);
+    // By name, never by how many. Counting said "one per project" while
+    // four projects had no group at all and three strangers sat in the
+    // strip making up the difference — so the panel reported everything
+    // fine, the repair button stayed hidden, and switching to any of those
+    // four moved nothing, with nothing on screen admitting why.
+    const wanted = this.status.workspaces ?? [];
+    const titles = (strip.groups ?? []).map((group) => group.title).filter(Boolean);
+    const missing = wanted.filter((name) => !titles.includes(name));
+    const extra = titles.filter((name) => !wanted.includes(name));
+    if (missing.length) {
+      return line(missing.length === 1
+        ? `${missing[0]} has no group`
+        : `${missing.length} projects have no group`, "resync");
+    }
+    if (extra.length) {
+      return line(extra.length === 1
+        ? `a group nothing wants: ${extra[0]}`
+        : `${extra.length} groups nothing wants`, "resync");
+    }
+    return line(`${titles.length} groups, one per project`);
   }
 
   /** Just the line, for the header. */
