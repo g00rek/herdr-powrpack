@@ -982,16 +982,20 @@ export default class PowrSpaces extends View {
 			const inside = this.tree(all.filter((space) => folderOf(space) === folder.id));
 			// The number is projects, not rows: a project with three branches
 			// beside it is one thing you put in here, not four.
-			body.child(this.folderHead(t, folder, inside));
-			if (folder.folded || !inside.length) continue;
-			// What is in a folder sits on a faint wash of the folder's colour,
-			// so it reads as belonging to it rather than as more of the list.
-			// Faint, because the rows on it carry their own colours too.
+			// A folder and what is in it sit on one faint wash of the folder's
+			// colour, its own row included, so the whole thing reads as one
+			// place rather than as more of the list. Faint, because the rows
+			// on it carry their own colours too.
 			const tint = folder.color ? (MARK[folder.color] ?? folder.color) : t.foreground;
-			const box = v_flex().gap(1).py(2).pl(8).rounded(6)
-				.when(/^#[0-9a-f]{6}$/i.test(tint), (el) => el.bg(`${tint}14`));
-			for (const node of inside) box.child(this.group(t, node, here, 0));
-			body.child(box);
+			const card = v_flex().gap(1).rounded(6)
+				.when(/^#[0-9a-f]{6}$/i.test(tint), (el) => el.bg(`${tint}14`))
+				.child(this.folderHead(t, folder, inside));
+			if (!folder.folded && inside.length) {
+				const box = v_flex().gap(1).pb(2).pl(8);
+				for (const node of inside) box.child(this.group(t, node, here, 0));
+				card.child(box);
+			}
+			body.child(card);
 		}
 
 		// Somewhere to drop a project that is in a folder, to take it out
