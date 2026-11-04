@@ -700,15 +700,16 @@ export default class PowrSpaces extends View {
 		return head;
 	}
 
-	/** The small words a box ends with. */
-	word(t, id, label, handler) {
-		return div()
+	/** A full-width row you can hit, the way Herdr's own menus are built. */
+	item(t, id, label, handler) {
+		return h_flex()
 			.id(id)
-			.px(6).py(2).rounded(4)
+			.h(28).px(8)
+			.items_center()
+			.rounded(6)
 			.cursor_pointer()
-			.text_size(11)
-			.text_color(t.dim)
-			.hover((s) => s.bg(t.hover).text_color(t.foreground))
+			.text_color(t.foreground)
+			.hover((s) => s.bg(t.hover))
 			.on_click(handler)
 			.child(label);
 	}
@@ -719,33 +720,53 @@ export default class PowrSpaces extends View {
 		// read as part of the list underneath, and the words at the bottom
 		// looked like headings over the projects below.
 		const panel = v_flex()
-			.gap(6).mx(2).mt(2).mb(4).p(8)
+			.gap(4).mx(2).mt(2).mb(4).p(6)
 			.rounded(8)
 			.bg(t.popover)
 			.border_1()
 			.border_color(t.border)
 			.on_mouse_down("left", (_event, cx) => cx.stop_propagation())
 			.on_mouse_down("right", (_event, cx) => cx.stop_propagation())
-			// It stands away from the row it belongs to, so it says whose it is.
-			.child(div().text_size(11).text_color(t.dim).truncate().child(title));
+			// It stands away from the row it belongs to, so it says whose it
+			// is — and the way out is up here, where a window's is.
+			.child(
+				h_flex().items_center().gap(6).px(8).pt(2).pb(1)
+					.child(div().flex_1().min_w(0).truncate()
+						.text_size(11).text_color(t.dim).child(title))
+					.child(
+						div()
+							.id("powr-box-close")
+							.px(5).rounded(4)
+							.cursor_pointer()
+							.text_size(12)
+							.text_color(t.dim)
+							.hover((s) => s.bg(t.hover).text_color(t.foreground))
+							.on_click((_event, cx) => {
+								this.menu = null;
+								this.spaceMenu = null;
+								cx.notify();
+							})
+							.child("\u00d7")
+					)
+			);
 		for (const row of rows) panel.child(row);
 		return panel;
 	}
 
-	/** Seven swatches: the six Herdr paints with, and no colour at all. */
+	/** Seven dots: the six Herdr paints with, and no colour at all. */
 	swatches(t, current, pick) {
 		const swatch = (color) =>
 			div()
 				.id(`powr-swatch-${current.key}-${color ?? "none"}`)
-				.size(16).flex_none().rounded(8)
+				.size(20).flex_none().rounded(10)
 				.cursor_pointer()
 				.bg(color ? MARK[color] : t.dim)
 				.border_2()
-				.border_color(current.color === color ? t.foreground : t.background)
+				.border_color(current.color === color ? t.foreground : t.popover)
+				.hover((s) => s.border_color(t.muted ?? t.dim))
 				.on_click((_event, cx) => pick(color, cx));
-		return h_flex().gap(5).items_center()
-			.child(swatch(null))
-			.children(HUES.map(swatch));
+		return h_flex().gap(6).items_center().px(8).py(4)
+			.children([null, ...HUES].map(swatch));
 	}
 
 	/** The glyphs, as a wrapped grid. `plain` is the one that means none. */
@@ -762,7 +783,7 @@ export default class PowrSpaces extends View {
 				.on_click((_event, cx) => pick(name === plain ? null : name, cx))
 				.child(svg(`mods/powr-spaces/icons/${name}.svg`).size(14)
 					.text_color((chosen ?? plain) === name ? t.accent : tint));
-		return h_flex().flex_wrap().gap(3).children(names.map(tile));
+		return h_flex().flex_wrap().gap(3).px(6).pb(2).children(names.map(tile));
 	}
 
 	/** The project a branch belongs to, or null when this is not a branch. */
@@ -786,7 +807,7 @@ export default class PowrSpaces extends View {
 		const project = this.projectOf(space);
 		return this.box(t, space.name, [
 			project
-				? div().text_size(11).text_color(t.dim)
+				? div().text_size(11).text_color(t.dim).px(8).py(4)
 					.child(`colour comes from ${project.name}`)
 				: this.swatches(t, { key: `sp-${space.id}`, color },
 					(pick, cx) => this.paintSpace(space.id, pick, cx)),
@@ -798,35 +819,20 @@ export default class PowrSpaces extends View {
 				tint: t.foreground,
 				pick: (name, cx) => this.wearSpaceIcon(space.id, name, cx),
 			}),
-			h_flex().items_center().justify_end().gap(4)
-				.pt(6).border_t_1().border_color(t.border)
-				.child(this.word(t, `powr-sp-plain-${space.id}`, "letter",
-					(_event, cx) => this.wearSpaceIcon(space.id, null, cx)))
-				// Everything else a project can have done to it stays where it
-				// has always been. Rebuilding Herdr's menu worse is not an
-				// improvement, and it is one press away.
-				.child(this.word(t, `powr-sp-more-${space.id}`, "more…", (_event, cx) => {
-					this.spaceMenu = null;
-					cx.notify();
-					openOverlay({
-						mod: "menu", kind: "popup", width: 200, height: 260,
-						props: { tab: "space", target: { id: space.id } },
-					});
-				}))
-				.child(div().w(6))
-				.child(
-					div()
-						.id(`powr-sp-done-${space.id}`)
-						.px(8).py(2).rounded(5)
-						.bg(t.surface).cursor_pointer()
-						.text_size(11).text_color(t.foreground)
-						.hover((s) => s.bg(t.hover))
-						.on_click((_event, cx) => {
-							this.spaceMenu = null;
-							cx.notify();
-						})
-						.child("done")
-				),
+			div().h(1).mx(6).my(2).bg(t.border),
+			this.item(t, `powr-sp-plain-${space.id}`, "Show its letter instead",
+				(_event, cx) => this.wearSpaceIcon(space.id, null, cx)),
+			// Everything else a project can have done to it stays where it has
+			// always been. Rebuilding Herdr's menu worse is not an improvement,
+			// and it is one press away.
+			this.item(t, `powr-sp-more-${space.id}`, "More\u2026", (_event, cx) => {
+				this.spaceMenu = null;
+				cx.notify();
+				openOverlay({
+					mod: "menu", kind: "popup", width: 200, height: 260,
+					props: { tab: "space", target: { id: space.id } },
+				});
+			}),
 		]);
 	}
 
@@ -842,31 +848,16 @@ export default class PowrSpaces extends View {
 				tint: t.foreground,
 				pick: (name, cx) => this.wearIcon(folder.id, name, cx),
 			}),
-			h_flex().items_center().justify_end().gap(4)
-				.pt(6).border_t_1().border_color(t.border)
-				.child(this.word(t, `powr-folder-rename-${folder.id}`, "rename", (_event, cx) => {
-					this.editing = folder.id;
-					this.menu = null;
-					this.name.set_value(folder.name);
-					this.name.focus();
-					cx.notify();
-				}))
-				.child(this.word(t, `powr-folder-delete-${folder.id}`, "delete",
-					(_event, cx) => this.deleteFolder(folder.id, cx)))
-				.child(div().w(6))
-				.child(
-					div()
-						.id(`powr-folder-done-${folder.id}`)
-						.px(8).py(2).rounded(5)
-						.bg(t.surface).cursor_pointer()
-						.text_size(11).text_color(t.foreground)
-						.hover((s) => s.bg(t.hover))
-						.on_click((_event, cx) => {
-							this.menu = null;
-							cx.notify();
-						})
-						.child("done")
-				),
+			div().h(1).mx(6).my(2).bg(t.border),
+			this.item(t, `powr-folder-rename-${folder.id}`, "Rename folder\u2026", (_event, cx) => {
+				this.editing = folder.id;
+				this.menu = null;
+				this.name.set_value(folder.name);
+				this.name.focus();
+				cx.notify();
+			}),
+			this.item(t, `powr-folder-delete-${folder.id}`, "Delete folder",
+				(_event, cx) => this.deleteFolder(folder.id, cx)),
 		]);
 	}
 
