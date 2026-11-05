@@ -843,7 +843,18 @@ export default class PowrSpaces extends View {
 	/** A popup's content: its title, then its rows. */
 	box(t, title, rows) {
 		const panel = v_flex().size_full().gap(4).p(6).bg(t.popover)
-			.child(div().px(8).pt(2).pb(1).truncate().text_size(11).text_color(t.dim).child(title));
+			.child(h_flex().items_center().pl(8).pt(2).pb(1)
+				.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(title))
+				.child(h_flex().id("powr-close").size(20).flex_none().rounded(5)
+					.items_center().justify_center().cursor_pointer()
+					.text_color(t.dim)
+					.hover((s) => s.bg(t.hover).text_color(t.foreground))
+					.on_click((_event, cx) => {
+						// A folder's name typed but not yet confirmed is kept.
+						if (this.role === "folder") this.rename(cx);
+						closeOverlay(props().overlay);
+					})
+					.child(svg("mods/spacr/icons/x.svg").size(12))));
 		for (const row of rows) panel.child(row);
 		return panel;
 	}
