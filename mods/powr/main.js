@@ -337,23 +337,23 @@ export default class Powr extends View {
     const line = (words, fix = null) => ({ words, fix });
     if (this.note) return line(this.note);
     if (!this.status) return line("Checking…");
-    if (!this.status.browser) return line("The browser is closed. Show browser starts it.");
-    if (!this.status.bridge) return line("The browser is open, but its extension is not responding. Restart fixes it.");
+    if (!this.status.browser) return line("Browser closed. Click Show browser to open it.");
+    if (!this.status.bridge) return line("Extension not responding. Click Restart to fix it.");
     // The browser outlives any one Herdr, and the part that follows your
     // spaces is a separate program. It can be gone while everything else
     // looks fine, and then nothing moves when you switch. Starting it again
     // is what brings the follower back, and that button is always there.
-    if (this.status.following === false) return line("The browser is open, but it is not following your spaces. Restart fixes it.");
+    if (this.status.following === false) return line("Not following your spaces. Click Restart to fix it.");
     // The commonest surprise by far: the project you are looking at is
     // turned off below, so switching to it moves nothing and the browser
     // keeps showing whatever came before. Silence looks exactly like a
     // fault, so say it. Nothing to repair — it is a choice, made in the
     // list underneath.
     const here = focused()?.space;
-    if (here && this.browsers()[here] !== true) return line("This space has the browser turned off, so the tabs stay as they were.");
+    if (here && this.browsers()[here] !== true) return line("Browser is off for this space.");
     const strip = this.status.strip ?? {};
     if (strip.windows && strip.windows !== 1) {
-      return line(`The browser has ${strip.windows} windows instead of one. Resync fixes it.`, "resync");
+      return line(`${strip.windows} browser windows. Click Resync to fix it.`, "Resync");
     }
     // By name, never by how many. Counting said "one per project" while
     // four projects had no group at all and three strangers sat in the
@@ -366,15 +366,15 @@ export default class Powr extends View {
     const extra = titles.filter((name) => !wanted.includes(name));
     if (missing.length) {
       return line(missing.length === 1
-        ? `${missing[0]} has no tab group yet. Resync adds it.`
-        : `${missing.length} spaces have no tab group yet. Resync adds them.`, "resync");
+        ? `${missing[0]} has no tab group. Click Resync to fix it.`
+        : `${missing.length} spaces have no tab group. Click Resync to fix it.`, "Resync");
     }
     if (extra.length) {
       return line(extra.length === 1
-        ? `There is a leftover tab group, ${extra[0]}, with no space. Resync removes it.`
-        : `There are ${extra.length} leftover tab groups with no space. Resync removes them.`, "resync");
+        ? `Leftover tab group: ${extra[0]}. Click Resync to fix it.`
+        : `${extra.length} leftover tab groups. Click Resync to fix it.`, "Resync");
     }
-    return line(`All good: ${titles.length} spaces, each with its own tab group.`);
+    return line(`All good: ${titles.length} tab groups.`);
   }
 
   /** Just the line, for the header. */
@@ -456,25 +456,22 @@ export default class Powr extends View {
 
   renderBrowsrPage(t) {
     const { words, fix } = this.state();
-    const action = (label, argument, hint) =>
-      div().id(`powr-${argument}`).px(9).py(3).rounded(5)
-        .bg(t.surface)
-        .text_color(this.working === label ? t.dim : t.foreground)
-        .hover((s) => s.bg(t.hover))
-        .tooltip(hint)
-        .on_click((_event, cx) => this.act(cx, argument, label))
-        .child(this.working === label ? "…" : label);
-    return v_flex().gap(10)
-      .child(div().text_color(t.dim).child(words))
-      .child(h_flex().gap(6)
-        .child(action("show browser", "launch",
-          "Bring the browser window forward. The only thing that starts it."))
-        .child(action("restart", "restart",
-          "Close the browser and start it again, with everything that runs beside it."))
-        .when(fix !== null, (el) => el.child(action(fix, "sync",
-          "Make the groups match the projects that have a browser."))))
-      .child(div().text_size(11).text_color(t.dim)
-        .child("Turn the browser on or off for a space with the browser mark on its row in the list."));
+    // One action per row: the button, and beside it what it does.
+    const row = (label, argument, about) =>
+      h_flex().items_center().gap(12)
+        .child(div().id(`powr-${argument}`).w(110).flex_none().py(4).rounded(5)
+          .flex().justify_center()
+          .bg(t.surface)
+          .text_color(this.working === label ? t.dim : t.foreground)
+          .hover((s) => s.bg(t.hover))
+          .on_click((_event, cx) => this.act(cx, argument, label))
+          .child(this.working === label ? "…" : label))
+        .child(div().text_size(12).text_color(t.dim).child(about));
+    return v_flex().gap(8)
+      .child(row("Show browser", "launch", "Jump to the browser window."))
+      .child(row("Restart", "restart", "Close the browser and open it again."))
+      .when(fix !== null, (el) => el.child(row(fix, "sync", "Match the tab groups to your spaces.")))
+      .child(div().pt(6).text_size(12).text_color(t.dim).child(words));
   }
 
   renderSpacrPage(t) {
@@ -484,6 +481,7 @@ export default class Powr extends View {
       .child(line("Right press on a project's icon: its colour and glyph."))
       .child(line("Right press on the rest of a project's row: Herdr's own menu."))
       .child(line("Right press on a folder: its name, colour, glyph and Delete."))
+      .child(line("Browser mark on a row: browser on or off for that space."))
       .child(line("Drag a project onto a folder to put it there, below the list to take it out."));
   }
 
