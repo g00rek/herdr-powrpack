@@ -10,7 +10,7 @@ import { swapMod } from "./layout-swap.js";
 //   anything else         the panel
 
 // Where Browsr is checked out. Change this line if yours is elsewhere.
-const BRIDGE = `${home()}/Projects/browsr/bridge.py`;
+const BRIDGE = `${home()}/Projects/herdr-powrpack/bridge.py`;
 const MODULES = "powr.modules";
 const PANEL = "powr.panel";
 const SAME_PRESS = 250;

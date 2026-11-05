@@ -109,7 +109,7 @@ const NAME_LINE = 20;
 
 // Browsr's own command, for the one thing this list changes that lives
 // outside Herdr. Change this line if your checkout is elsewhere.
-const BRIDGE = `${home()}/Projects/browsr/bridge.py`;
+const BRIDGE = `${home()}/Projects/herdr-powrpack/bridge.py`;
 
 // Branches worth printing under a name. Almost every project sits on its
 // trunk, so printing it on every row costs a second line each and tells you

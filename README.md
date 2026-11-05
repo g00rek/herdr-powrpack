@@ -1,256 +1,168 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Browsr" width="120" />
+  <img src="assets/powrpack.png" alt="Herdr Powr Pack" width="140" />
 </p>
 
-<h1 align="center">Browsr</h1>
+<h1 align="center">Herdr Powr Pack</h1>
 
 <p align="center">
-  <a href="#install">install</a> · <a href="#the-panel">panel</a> · <a href="#for-coding-agents">for coding agents</a> · <a href="#how-it-works">how it works</a> · <a href="https://herdr.dev">herdr.dev</a>
+  <a href="#install">install</a> · <a href="#modules">modules</a> · <a href="#for-coding-agents">for coding agents</a> · <a href="#how-it-works">how it works</a> · <a href="https://herdr.dev">herdr.dev</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/g00rek/browsr/releases/latest"><img src="https://img.shields.io/github/v/release/g00rek/browsr?label=release&labelColor=333333&color=666666" alt="latest release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-666666?labelColor=333333" alt="MIT license" /></a>
-  <a href="https://github.com/g00rek/browsr/actions/workflows/check.yml"><img src="https://img.shields.io/github/actions/workflow/status/g00rek/browsr/check.yml?branch=main&label=checks&labelColor=333333&color=666666" alt="checks" /></a>
-  <a href="https://herdr.dev/docs/plugins/"><img src="https://img.shields.io/badge/herdr-plugin-666666?labelColor=333333" alt="Herdr plugin" /></a>
+  <a href="https://github.com/g00rek/herdr-powrpack/actions/workflows/check.yml"><img src="https://img.shields.io/github/actions/workflow/status/g00rek/herdr-powrpack/check.yml?branch=main&label=checks&labelColor=333333&color=666666" alt="checks" /></a>
+  <img src="https://img.shields.io/badge/herdr-mod-666666?labelColor=333333" alt="Herdr mod" />
   <img src="https://img.shields.io/badge/platform-Linux-666666?labelColor=333333" alt="Linux" />
   <a href="https://x.com/michalgoreckipl"><img src="https://img.shields.io/badge/follow-%40michalgoreckipl-000000?logo=x&logoColor=white" alt="follow @michalgoreckipl on X" /></a>
 </p>
 
 ---
 
-**Every Herdr workspace gets its own group of browser tabs, in a browser of its own.**
+**A set of modules for the [Herdr](https://herdr.dev) desktop app, installed once and
+switched on or off from one control panel.**
 
-- **Switch project and the browser follows** — that workspace's group opens, the
-  rest fold away. Keyboard, mouse or command line, it keeps up.
-- **It never grabs your screen** — the window comes forward only when you ask
-  for it, and nothing but that key ever starts it.
-- **Your own browser is left alone** — Browsr drives a separate Chromium
-  profile, with its own history and logins.
-- **A panel inside Herdr** — what the browser is doing, and the keys that fix
-  it, without leaving the terminal.
-- **Coding agents land in the right tab** — an agent in a pane sees that
-  workspace's tabs and opens pages there without taking focus.
+- **Browsr** — every space gets its own group of browser tabs, in a browser of
+  its own. Switch spaces and the browser follows.
+- **Spacr** — your projects in folders, each with its own colour and icon, with
+  worktrees hanging off the project they belong to.
+- **Powr panel** — one place to switch modules on and off, see whether the
+  browser is healthy, and change their settings.
 
 <p align="center">
-  <img src="assets/herdr-to-browsr.png" alt="Herdr's space list on the left — api, tasteray, docs, infra, billing — with a coloured arrow from each space to the browser tab group of the same name below." width="900" />
+  <img src="preview.png" alt="The Powr panel: modules on the left, Browsr's page on the right with Show browser and Restart buttons, its status, and its settings." width="820" />
 </p>
-
-One group per workspace, named after it, kept in step as you work.
 
 ## Requirements
 
 - Linux
-- [Herdr](https://herdr.dev) 0.8.2 or newer
-- Chromium, or Google Chrome
-- Python 3.9 or newer (CI runs 3.12)
-- Hyprland, for the one feature that raises the browser window. Everything else
-  works on any window manager; that one key simply does nothing.
-- `npx`, only if you want the Chrome DevTools MCP integration for coding agents
+- The [Herdr desktop app](https://herdr.dev) (`herdr-app`)
+- Python 3.9 or newer
+- For Browsr: Chromium or Google Chrome. Hyprland only for raising the browser
+  window; everything else works on any window manager.
+- `npx`, only for the Chrome DevTools MCP integration for coding agents
 
 ## Install
 
 ```bash
-herdr plugin install g00rek/browsr
+git clone https://github.com/g00rek/herdr-powrpack ~/Projects/herdr-powrpack
+~/Projects/herdr-powrpack/install.py
 ```
 
-That is the whole installation. It also runs Browsr's setup step, which finds
-your browser and registers the small helper that lets the browser talk to
-Herdr. The step is harmless to repeat, and the plugin runs it again every time
-it starts the browser.
+The installer is safe to run again, for example after `git pull`. It:
 
-Then add two keys to `~/.config/herdr/config.toml`:
+1. finds your browser and registers the small helper that lets Browsr's
+   extension talk to Herdr;
+2. copies the `powr` and `spacr` mods into `~/.config/herdr-app/mods/`,
+   pointed at your checkout;
+3. binds `alt-b` to the Powr panel, unless you already use that key;
+4. adds a **Powr Pack** button under Settings and puts Spacr in place of
+   Herdr's project list. Herdr's own layouts are read-only, so a shipped
+   layout is cloned first (`main-powr`) and the clone is switched to. Your old
+   layout is still one `ctrl-shift-l` away.
 
-```toml
-[[keys.command]]
-key = "prefix+b"
-type = "plugin_action"
-command = "g00rek.browsr.launch"
-description = "Show Browsr"
+## Modules
 
-[[keys.command]]
-key = "prefix+shift+b"
-type = "plugin_action"
-command = "g00rek.browsr.panel"
-description = "Browsr panel"
-```
+Open the panel with the **Powr Pack** button at the bottom of the sidebar or
+`alt-b`. Each module has a switch next to its name.
 
-Then `herdr server reload-config`.
+### Browsr
 
-### From a checkout
+One tab group per space, named after it. The space you are in is open; the
+others are folded away and unfold when you switch to them. A new space gets a
+group, a renamed one is renamed, a closed one takes its group with it.
 
-To work on Browsr itself, link the directory instead. Linking does **not** run
-the setup step, so run it once by hand:
+Browsr drives a separate Chromium profile, with its own history and logins, so
+your own browser is left alone. It never grabs the screen: the window comes
+forward only when you press **Show browser**.
 
-```bash
-git clone https://github.com/g00rek/browsr ~/projects/browsr
-herdr plugin link ~/projects/browsr
-~/projects/browsr/bridge.py setup
-```
+In the panel:
 
-## Using it
-
-`prefix+b` shows Browsr, starting it the first time. **Nothing else ever starts
-it.** An agent opening a page, a question about the tabs, the browser tooling
-that comes up with an agent session — all of them work when Browsr is running
-and politely decline when it is not. The browser is a window on your screen and
-it appears when you ask for it.
-
-<p align="center">
-  <img src="assets/tab-strip.png" alt="A browser tab strip: five coloured groups. The tasteray group is open and holds two tabs; the other four are folded into a single chip each." width="820" />
-</p>
-
-The workspace you are in is open; the rest are folded into a chip each, and
-unfold when you switch to them.
-
-From then on it keeps itself in step with Herdr: a new workspace gets a group, a
-renamed one is renamed, a closed one takes its group with it, and switching
-projects brings the right group forward — whether you switch with the keyboard,
-the mouse or the command line.
-
-Clicking an `http://localhost:…` link in Herdr sends it to the current
-workspace's group instead of your own browser.
-
-## The panel
-
-`prefix+shift+b` opens a pane beside your work. The same key takes you to it
-when it is open elsewhere, and closes it when you are already in it.
-
-```
-  BROWSR
-
-  Browser        running
-  Herdr link     answering
-  Extension      up to date
-  Windows        1
-
-  Strip matches Herdr (5)
-    api                    1 tab
-    search                 2 tabs
-    notes                  1 tab
-
-  [p] show browser  [s] match Herdr  [r] restart browser
-  [k] quit browser  [q] close panel
-```
-
-What the rows mean:
-
-| Row | What it tells you |
+| | |
 |---|---|
-| `Browser` | Whether Chromium is running at all. |
-| `Herdr link` | Whether its extension is answering. The browser can be running while this is dead, and then tab groups quietly stop following — you also get a notification when that happens. |
-| `Extension` | Whether the browser is running the extension that is on disk. Restarting is the only thing that refreshes it. |
-| `Windows` | Should always be 1. More than one means something opened a stray window. |
-| `Strip …` | Each group against Herdr's workspaces. A `leftover` group has no workspace; a workspace marked `no group` has no group. |
+| **Show browser** | Jump to the browser window, starting it if needed. |
+| **Restart** | Close the browser and open it again. Also reloads the extension. |
+| **Resync** | Shown only when groups and spaces disagree. Matches them again. |
+| **New spaces** | Turn the browser on for every new space and worktree. |
+| **Agent asks** | What happens when an agent needs a browser in a space that has none: ask you, turn it on, or refuse. |
+| **Fold other groups** | Only the current space's tabs stay open. |
 
-`[s] match Herdr` forces the strip back into agreement. You should not need it —
-it happens on its own — but it is there when it has not.
+Under the buttons, one line says what is wrong, if anything, and which button
+fixes it.
+
+### Spacr
+
+Replaces Herdr's project list.
+
+- **Folders.** Make one with the folder button, drag projects into it, right-click
+  it for its name, colour and icon. Folders and their projects are drawn as one
+  tree.
+- **Colour and icon per project.** Right-click a project's tile.
+- **Worktrees under their project.** A space checked out from the same repository
+  hangs off its project with a line, and shows Herdr's branch icon.
+- **Browser mark.** The mark at the end of a row turns Browsr on or off for that
+  space.
+
+Settings: how strongly a folder's colour tints its background.
+
+Switching Spacr off puts Herdr's own list back.
 
 ## For coding agents
 
-Three commands, meant to be run from inside a Herdr pane:
+From inside a Herdr pane:
 
 ```bash
-./bridge.py workspace-tabs                     # the tabs of this workspace, as JSON
+./bridge.py workspace-tabs                     # the tabs of this space, as JSON
 ./bridge.py open-url http://localhost:3000     # open a page without taking focus
-./bridge.py status                             # everything the panel shows, as JSON
+./bridge.py status                             # what the panel shows, as JSON
 ```
 
 For Claude Code, a wrapper attaches the Chrome DevTools MCP to the running
 Browsr instead of launching a browser of its own:
 
 ```bash
-claude mcp add --scope user chrome-devtools ~/projects/browsr/browsr-chrome-mcp.py
+claude mcp add --scope user chrome-devtools ~/Projects/herdr-powrpack/browsr-chrome-mcp.py
 ```
 
-The wrapper does not hand the browser to the MCP server directly. It puts a small
-filter in between, so that nothing an agent does can raise the window or open a
-separate one on top of your typing: commands that bring a tab to the front are
-answered without being sent, new tabs are made by Browsr's own extension, in the background and in
-the workspace's group (a tab created over DevTools raises the window even when
-asked not to), and
-isolated browser contexts (which would open a new window) are refused. Agents
-work in the tabs of this profile, in their workspace's group.
+It puts a filter between the agent and the browser, so nothing an agent does
+can raise the window or open a separate one on top of your typing. New tabs are
+made in the background, in the space's group.
 
 `skills/browsr/SKILL.md` tells an agent how to pick the right tab. Copy it to
-`~/.claude/skills/browsr/SKILL.md` and replace `<browsr>` with the directory you
-cloned into.
-
-## When something looks wrong
-
-Open the panel first; it names all four of these.
-
-**Tab groups stopped following.** The link is dead — the browser is up but its
-extension is not answering. `[r] restart browser`. You also get a notification
-when this lasts more than a minute, because it makes no other noise.
-
-**The panel says the extension is older than the files.** You changed the
-extension. Chromium keeps its own compiled copy and a plain restart of the
-browser does not refresh it; `[r] restart browser` does, because the plugin
-clears that copy when the files have changed.
-
-**More than one window.** Something opened a stray window. It is harmless now —
-groups are found wherever they are — but close it; the panel will go back to 1.
-
-**A group with no workspace, or the other way round.** Press `[s] match Herdr`.
-If it comes back, that is a bug worth reporting.
-
-**It says it cannot find a browser.** Setup looks for `chromium`,
-`chromium-browser`, `chromium-freeworld`, `ungoogled-chromium`,
-`google-chrome-stable`, `google-chrome` and `chrome`, in that order. If yours
-is named or installed differently, point at it:
-
-```bash
-export BROWSR_CHROMIUM=/path/to/your/browser
-```
-
-## Uninstall
-
-Run the cleanup action first, while the plugin is still installed and Herdr is
-running:
-
-```bash
-herdr plugin action invoke cleanup --plugin g00rek.browsr
-```
-
-Then remove the plugin itself. Which command depends on how you installed it:
-
-```bash
-herdr plugin uninstall g00rek.browsr    # installed from GitHub
-herdr plugin unlink g00rek.browsr       # linked from a checkout
-```
-
-Cleanup removes the file that lets Chromium talk to Herdr and the plugin's
-state directory. It does **not** delete the browser profile — that holds your
-history and logins — and prints where it is and how big, so you can decide.
+`~/.claude/skills/browsr/SKILL.md` and replace `<browsr>` with your checkout.
 
 ## How it works
 
 ```text
-Herdr  ──events──┐                   ┌── asks Herdr which workspace is in front,
-                 │                   │   five times a second over one connection
-             bridge.py               │
-                 │                   │
-            Unix socket        native_host.py
-                 │                   │
-                 └────── native messaging ──────┐
-                                                │
-                            dedicated Chromium + extension
-                                                │
-      coding agent ── browsr-chrome-mcp.py ─────┘  (DevTools on 127.0.0.1:39222)
+Herdr app ── powr / spacr mods ──exec──► bridge.py ──► Unix socket
+                                                          │
+                                                   native_host.py
+                                                          │ native messaging
+                                          dedicated Chromium + extension
+                                                          │
+         coding agent ── browsr-chrome-mcp.py ────────────┘  (DevTools on 127.0.0.1:39222)
 ```
 
 The extension owns the tab groups, because nothing outside a browser extension
-can see them. The native host lives exactly as long as the extension is
-connected and is what keeps the browser in step: Herdr does not call a plugin
-when a workspace is switched in its own interface, so waiting to be told does
-not work — it asks instead.
+can see them. `bridge.py` follows the space in front from the app's
+`view.json`, which the app rewrites on every switch, and tells the extension.
 
-The DevTools port is fixed at `39222` so that restarting the browser does not
-strand agent sessions that resolved the address once at startup. It is
-deliberately not `9222`, which is what a personal Chrome answers on.
+The DevTools port is fixed at `39222`, so restarting the browser does not strand
+agent sessions, and is deliberately not `9222`, which a personal Chrome answers
+on. Security model: [SECURITY.md](SECURITY.md).
 
-More on the security model: [SECURITY.md](SECURITY.md).
+If your browser is not found, point at it with
+`export BROWSR_CHROMIUM=/path/to/your/browser` and run the installer again.
+
+## Uninstall
+
+```bash
+~/Projects/herdr-powrpack/bridge.py cleanup
+rm -r ~/.config/herdr-app/mods/powr ~/.config/herdr-app/mods/spacr
+```
+
+Then switch back to your old layout (`ctrl-shift-l`) and delete `main-powr`,
+and remove `alt-b` from `~/.config/herdr-app/keys.json`. Cleanup leaves the
+browser profile, which holds your history and logins, and prints where it is.
 
 ## Development
 
@@ -258,10 +170,11 @@ More on the security model: [SECURITY.md](SECURITY.md).
 ./scripts/check.sh
 ```
 
-That runs the Python tests, the extension tests and the syntax checks. The
-extension is driven through the same native port Herdr uses, against an
-in-memory model of windows, tabs and groups; the socket handling is exercised
-against real sockets.
+Runs the Python tests, the extension tests and the syntax checks.
+`herdr-app check mods/<name>` loads a mod once and reports what is wrong.
+
+This repository continues [Browsr](https://github.com/g00rek/browsr), with its
+history.
 
 ## Licence
 
