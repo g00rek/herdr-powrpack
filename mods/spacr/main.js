@@ -733,30 +733,41 @@ export default class PowrSpaces extends View {
 	group(t, { space, kids }, here, indent) {
 		const block = v_flex().gap(1).child(this.row(t, space, space.id === here, null));
 		if (!kids.length) return block;
-		const line = this.colorOf(space, null);
-		// Each row draws its own piece of the rule rather than the group
-		// drawing one down its whole side: that one ran past the last branch
-		// to the bottom of the group and pointed at the next project. Here
-		// the last row's piece stops at its own stub, which is what an elbow
-		// is. No gap between the rows either, or the pieces would not meet.
+		return block.child(this.branches(t, kids.map((kid) =>
+			this.row(t, kid, kid.id === here, null, space)), this.colorOf(space, null),
+			indent, 4 + NAME_LINE / 2));
+	}
+
+	/**
+	 * Rows hung off the one above them by a rule: a line down from its tile
+	 * and a short stub into each row. The same drawing for a project's
+	 * branches and for the projects in a folder, so the whole list reads as
+	 * one tree.
+	 *
+	 * Each row draws its own piece of the rule rather than one line down the
+	 * whole side: that one ran past the last row and pointed at whatever came
+	 * next. Here the last row's piece stops at its own stub, which is what an
+	 * elbow is. No gap between the rows either, or the pieces would not meet.
+	 * `reach` is how far down a row its stub sits: the middle of its tile.
+	 */
+	branches(t, rows, line, indent, reach) {
 		const nest = v_flex().gap(0).ml(indent + 17);
-		kids.forEach((kid, n) => {
-			const last = n === kids.length - 1;
+		rows.forEach((child, n) => {
+			const last = n === rows.length - 1;
 			nest.child(
 				h_flex().items_stretch()
 					.child(
 						v_flex().w(17).flex_none().items_start()
-							.child(div().w(1).h(4 + NAME_LINE / 2).flex_none().bg(line))
+							.child(div().w(1).h(reach).flex_none().bg(line))
 							.child(div().w(17).h(1).flex_none().bg(line))
 							.child(last
 								? div().w(1).flex_1()
 								: div().w(1).flex_1().bg(line))
 					)
-					.child(div().flex_1().min_w(0)
-						.child(this.row(t, kid, kid.id === here, null, space)))
+					.child(div().flex_1().min_w(0).child(child))
 			);
 		});
-		return block.child(nest);
+		return nest;
 	}
 
 	folderHead(t, folder, inside) {
@@ -794,16 +805,16 @@ export default class PowrSpaces extends View {
 				});
 			})
 			.child(
-				// No tile under it. The glyph is already a folder, so a filled
-			// square behind it only competes with the projects' own tiles,
-			// which are the thing that is supposed to be read first.
+				// A tile like a project's, so the tree has one shape at every
+				// level, but a faint one: the projects in it are read first.
 			h_flex()
 					.id(`powr-folder-tile-${folder.id}`)
-					.size(22).flex_none().items_center().justify_center()
+					.size(22).flex_none().rounded(6).items_center().justify_center()
 					.cursor_pointer()
+					.when(/^#[0-9a-f]{6}$/i.test(tint), (el) => el.bg(`${tint}40`))
 					.child(svg(folder.icon
 						? `mods/spacr/icons/${folder.icon}.svg`
-						: "mods/spacr/folder.svg").size(19).text_color(tint))
+						: "mods/spacr/folder.svg").size(14).text_color(tint))
 			);
 
 		if (this.editing === folder.id) {
@@ -1078,9 +1089,10 @@ export default class PowrSpaces extends View {
 				.when(/^#[0-9a-f]{6}$/i.test(tint) && this.wash() !== null, (el) => el.bg(`${tint}${this.wash()}`))
 				.child(this.folderHead(t, folder, inside));
 			if (!folder.folded && inside.length) {
-				const box = v_flex().gap(1).pb(2).pl(8);
-				for (const node of inside) box.child(this.group(t, node, here, 0));
-				card.child(box);
+				// Its projects hang off its tile by the same rule a project's
+				// branches hang off the project, in the folder's colour.
+				card.child(this.branches(t, inside.map((node) => this.group(t, node, here, 0)),
+					tint, 0, 4 + 11).pb(2));
 			}
 			body.child(card);
 		}
