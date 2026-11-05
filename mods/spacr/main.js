@@ -1096,8 +1096,6 @@ export default class PowrSpaces extends View {
 			.on_mouse_move((_event, cx) => this.hover("out", "out", cx))
 			.on_mouse_up("left", (_event, cx) => this.drop(cx)));
 
-		const chosen = this.browsers();
-		const off = all.filter((space) => chosen[space.id] !== true).length;
 		const button = (id, label, hint, handler) =>
 			div()
 				.id(id)
@@ -1131,8 +1129,7 @@ export default class PowrSpaces extends View {
 			.child(
 				h_flex().px(14).items_center().gap(4)
 					.child(div().flex_1().text_size(11).text_color(t.dim).child("spaces"))
-					.when(off > 0 && this.browsrOn(), (el) => el.child(
-						div().text_size(10.5).text_color(t.dim).child(`${off} without a browser`)))
+
 					.child(button("powr-new-folder",
 						svg("mods/spacr/folder.svg").size(12), "New folder",
 						(_event, cx) => this.newFolder(cx)))
