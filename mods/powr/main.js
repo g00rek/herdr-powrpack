@@ -39,8 +39,10 @@ function find(node, id) {
 }
 
 const ALL = [
-	{ id: "browsr", name: "Browsr", about: "One browser tab group per project, following the project you are in." },
-	{ id: "spacr", name: "Spacr", about: "The project list with folders, colours and icons." },
+	{ id: "browsr", name: "Browsr", icon: "mods/powr/browsr.svg",
+		about: "A browser for your agents: one tab group per project." },
+	{ id: "spacr", name: "Spacr", icon: "mods/powr/spacr.svg",
+		about: "Your projects in folders, each with its own colour and icon." },
 ];
 
 // Which group you are in, said in colour.
@@ -434,17 +436,21 @@ export default class Powr extends View {
         .opacity(on[m.id] ? 1 : 0.5)
         .hover((s) => s.bg(t.hover))
         .on_click((_event, cx) => { this.page = m.id; cx.notify(); })
-        .child(m.name));
+        .child(h_flex().items_center().gap(8)
+          .child(svg(m.icon).size(14))
+          .child(m.name)));
     }
     return column;
   }
 
   /** The page's own top line: its name, and the one switch for it. */
   renderHeader(t, m, on) {
-    return h_flex().items_center().gap(8).pb(6).border_b_1().border_color(t.border)
-      .when(m.id === "browsr", (el) =>
-        el.child(svg("mods/powr/browsr.svg").size(16).text_color(on ? this.colour(t) : t.dim)))
-      .child(div().flex_1().text_size(15).text_color(t.foreground).child(m.name))
+    const colour = !on ? t.dim : m.id === "browsr" ? this.colour(t) : t.foreground;
+    return h_flex().items_center().gap(10).pb(10).border_b_1().border_color(t.border)
+      .child(svg(m.icon).size(18).flex_none().text_color(colour))
+      .child(v_flex().flex_1().min_w(0).gap(2)
+        .child(div().text_size(15).text_color(t.foreground).child(m.name))
+        .child(div().text_size(12).text_color(t.dim).child(m.about)))
       .child(this.toggle(t, m.id, on, (_event, cx) => this.switchModule(m.id, !on, cx)));
   }
 
@@ -490,9 +496,8 @@ export default class Powr extends View {
     const m = ALL.find((m) => m.id === this.page) ?? ALL[0];
     const body = v_flex().flex_1().min_w(0).h_full().p(16).gap(12)
       .child(this.renderHeader(t, m, on[m.id]))
-      .child(!on[m.id] ? div().text_color(t.dim).child(m.about)
-        : m.id === "browsr" ? this.renderBrowsrPage(t)
-        : this.renderSpacrPage(t));
+      .when(Boolean(on[m.id]), (el) => el.child(m.id === "browsr" ? this.renderBrowsrPage(t)
+        : this.renderSpacrPage(t)));
     return h_flex()
       .id("root")
       .size_full()
