@@ -103,6 +103,10 @@ const MODULES = "powr.modules";
 // the one its list puts beside a worktree.
 const BRANCH_ICON = "branch";
 
+// A project name's line, px. A branch's icon and the rule's stub both sit on
+// its middle, so they meet the name whether or not a line follows it.
+const NAME_LINE = 20;
+
 // Browsr's own command, for the one thing this list changes that lives
 // outside Herdr. Change this line if your checkout is elsewhere.
 const BRIDGE = `${home()}/Projects/browsr/bridge.py`;
@@ -583,9 +587,11 @@ export default class PowrSpaces extends View {
 		const lifted = this.pressed === space.id;
 		return h_flex()
 			.id(`powr-space-${space.id}`)
-			.items_center()
+			// A branch lines up with its name, the line the rule points at;
+			// a project's larger tile sits in the middle of its two lines.
+			.when(!from, (el) => el.items_center().px(8))
+			.when(Boolean(from), (el) => el.items_start().pl(2).pr(8))
 			.gap(8)
-			.px(8)
 			.py(4)
 			.rounded(6)
 			.cursor_pointer()
@@ -626,7 +632,7 @@ export default class PowrSpaces extends View {
 					.id(`powr-tile-${space.id}`)
 					// A project's tile is as large as a folder's icon, so the two
 					// stand in one column; a branch's stays small under it.
-					.size(from ? 18 : 22)
+					.w(from ? 18 : 22).h(from ? NAME_LINE : 22)
 					.flex_none()
 					.rounded(from ? 5 : 6)
 					.items_center()
@@ -652,7 +658,7 @@ export default class PowrSpaces extends View {
 				v_flex()
 					.flex_1()
 					.min_w(0)
-					.child(div().truncate().text_color(t.foreground).child(space.name))
+					.child(div().truncate().line_height(`${NAME_LINE}px`).text_color(t.foreground).child(space.name))
 					.when(Boolean(space.branch) && !TRUNK.has(space.branch)
 						&& space.branch !== space.name, (el) =>
 						el.child(div().truncate().text_size(10.5).text_color(t.dim).child(space.branch)))
@@ -709,9 +715,9 @@ export default class PowrSpaces extends View {
 			nest.child(
 				h_flex().items_stretch()
 					.child(
-						v_flex().w(11).flex_none().items_start()
-							.child(div().w(1).flex_1().bg(line))
-							.child(div().w(11).h(1).flex_none().bg(line))
+						v_flex().w(17).flex_none().items_start()
+							.child(div().w(1).h(4 + NAME_LINE / 2).flex_none().bg(line))
+							.child(div().w(17).h(1).flex_none().bg(line))
 							.child(last
 								? div().w(1).flex_1()
 								: div().w(1).flex_1().bg(line))
