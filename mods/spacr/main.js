@@ -226,11 +226,15 @@ export default class PowrSpaces extends View {
 	 * the truth, and it is the thing that moves when you cd.
 	 */
 	cwdOf(space) {
+		const memo = this.memo;
+		if (memo?.cwd.has(space.id)) return memo.cwd.get(space.id);
 		const ids = new Set((space.tabs || []).map((tab) => tab.id));
-		const open = panes().filter((pane) => ids.has(pane.tab) && pane.cwd);
+		const open = (memo?.panes ?? panes()).filter((pane) => ids.has(pane.tab) && pane.cwd);
 		const active = (space.tabs || []).find((tab) => tab.active);
 		const first = (active && open.find((pane) => pane.tab === active.id)) || open[0];
-		return first?.cwd || space.folder || null;
+		const cwd = first?.cwd || space.folder || null;
+		memo?.cwd.set(space.id, cwd);
+		return cwd;
 	}
 
 	/** What git said about where this project sits, or null if we never asked. */
@@ -249,12 +253,16 @@ export default class PowrSpaces extends View {
 	 * folder and its branches go with it, because they were never separate.
 	 */
 	ownerOf(space) {
+		const memo = this.memo;
+		if (memo?.owner.has(space.id)) return memo.owner.get(space.id);
 		const info = this.gitOf(space);
-		if (!info || !info.linked) return space;
-		return spaces().find((other) => {
-			const theirs = this.gitOf(other);
-			return theirs && !theirs.linked && theirs.repo === info.repo;
-		}) ?? space;
+		const owner = !info || !info.linked ? space
+			: (memo?.spaces ?? spaces()).find((other) => {
+				const theirs = this.gitOf(other);
+				return theirs && !theirs.linked && theirs.repo === info.repo;
+			}) ?? space;
+		memo?.owner.set(space.id, owner);
+		return owner;
 	}
 
 	/**
@@ -994,9 +1002,22 @@ export default class PowrSpaces extends View {
 		const t = theme();
 		if (this.role === "look") return this.renderLook(t);
 		if (this.role === "folder") return this.renderFolderMenu(t);
+		// Herdr stops a render that runs too long. Which folder and which
+		// project each row belongs to is asked many times over in one pass,
+		// and each ask read every pane and every space again; within one
+		// render the answers cannot change, so they are worked out once.
+		this.memo = { spaces: spaces(), panes: panes(), cwd: new Map(), owner: new Map() };
+		try {
+			return this.renderList(t);
+		} finally {
+			this.memo = null;
+		}
+	}
+
+	renderList(t) {
 		const here = focused()?.space;
 		const { list, of } = this.folders();
-		const all = spaces();
+		const all = this.memo.spaces;
 		// Which folder a row is in — its project's folder, so a project and
 		// the branches beside it are never split between two places.
 		const folderOf = (space) => of[this.ownerOf(space).id];
