@@ -29,9 +29,18 @@ const ASK_EVERY = 1000;
 const ON = "browsr.on";
 
 // The modules this panel switches, in the order the column lists them.
+function find(node, id) {
+  if (node?.id === id) return node;
+  for (const child of node?.children ?? []) {
+    const found = find(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
 const ALL = [
-	{ id: "browsr", name: "Browsr" },
-	{ id: "spacr", name: "Spacr" },
+	{ id: "browsr", name: "Browsr", about: "One browser tab group per project, following the project you are in." },
+	{ id: "spacr", name: "Spacr", about: "The project list with folders, colours and icons." },
 ];
 
 // Which group you are in, said in colour.
@@ -244,8 +253,6 @@ export default class Powr extends View {
       }
       setShared(MODULES, { ...this.modules(), [id]: on });
     }
-    if (!on && this.page === id) this.page = null;
-    if (on) this.page = id;
     cx.notify();
   }
 
@@ -382,24 +389,26 @@ export default class Powr extends View {
   renderButton() {
     const t = theme();
     this.publishAccent();
-    return h_flex()
-      .id("powr-button")
-      .size_full()
-      .items_center()
-      .justify_center()
-      .bg(t.chrome)
-      .tooltip("Powr")
-      .hover((s) => s.bg(t.hover))
-      .on_mouse_down("left", () => { this.closing = this.pressedWhileOpen(); })
-      .on_click(() => {
-        const open = (shared(PANEL) ?? {}).open === true;
-        const closing = this.closing;
-        this.closing = false;
-        // Still there: close it. Already gone with this same press: leave it.
-        if (!open && closing) return;
-        run("mod.open", { name: "powr" });
-      })
-      .child(svg("mods/powr/powr.svg").size(16).text_color(t.foreground));
+    // A line under Herdr's own Settings, drawn the way Herdr draws those.
+    const narrow = (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
+    return v_flex().size_full().bg(t.chrome).px(8).pb(8).text_size(13)
+      .child(h_flex()
+        .id("powr-button")
+        .h(28).px(8).gap(9).items_center().rounded(8)
+        .text_color(t.muted)
+        .hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .cursor_pointer()
+        .on_mouse_down("left", () => { this.closing = this.pressedWhileOpen(); })
+        .on_click(() => {
+          const open = (shared(PANEL) ?? {}).open === true;
+          const closing = this.closing;
+          this.closing = false;
+          // Still there: close it. Already gone with this same press: leave it.
+          if (!open && closing) return;
+          run("mod.open", { name: "powr" });
+        })
+        .child(svg("mods/powr/zap.svg").size(14))
+        .when(!narrow, (el) => el.child("Powr Pack")));
   }
 
   /** A switch drawn by hand: gpui-base's Switch has no styling of its own. */
@@ -415,26 +424,28 @@ export default class Powr extends View {
   renderColumn(t) {
     const on = this.modules();
     const column = v_flex().w(180).flex_none().h_full().p(8).gap(2)
-      .border_r_1().border_color(t.border)
-      .child(div().px(6).pb(4).text_size(11).text_color(t.dim).child("Modules"));
+      .border_r_1().border_color(t.border);
     for (const m of ALL) {
-      column.child(h_flex().px(6).py(4).items_center().gap(8)
-        .child(div().flex_1().text_color(on[m.id] ? t.foreground : t.dim).child(m.name))
-        .child(this.toggle(t, m.id, on[m.id],
-          (_event, cx) => this.switchModule(m.id, !on[m.id], cx))));
-    }
-    column.child(div().h(1).my(6).bg(t.border));
-    for (const m of ALL.filter((m) => on[m.id])) {
       const picked = this.page === m.id;
       column.child(div().id(`powr-page-${m.id}`)
         .px(6).py(5).rounded(6).cursor_pointer()
         .bg(picked ? t.selected : t.popover)
         .text_color(picked ? t.foreground : t.dim)
+        .opacity(on[m.id] ? 1 : 0.5)
         .hover((s) => s.bg(t.hover))
         .on_click((_event, cx) => { this.page = m.id; cx.notify(); })
         .child(m.name));
     }
     return column;
+  }
+
+  /** The page's own top line: its name, and the one switch for it. */
+  renderHeader(t, m, on) {
+    return h_flex().items_center().gap(8).pb(6).border_b_1().border_color(t.border)
+      .when(m.id === "browsr", (el) =>
+        el.child(svg("mods/powr/browsr.svg").size(16).text_color(on ? this.colour(t) : t.dim)))
+      .child(div().flex_1().text_size(15).text_color(t.foreground).child(m.name))
+      .child(this.toggle(t, m.id, on, (_event, cx) => this.switchModule(m.id, !on, cx)));
   }
 
   renderBrowsrPage(t) {
@@ -448,10 +459,7 @@ export default class Powr extends View {
         .on_click((_event, cx) => this.act(cx, argument, label))
         .child(this.working === label ? "…" : label);
     return v_flex().gap(10)
-      .child(h_flex().items_center().gap(8)
-        .child(svg("mods/powr/browsr.svg").size(16).text_color(this.colour(t)))
-        .child(div().text_color(t.foreground).child("Browsr"))
-        .child(div().flex_1().text_color(t.dim).child(words)))
+      .child(div().text_color(t.dim).child(words))
       .child(h_flex().gap(6)
         .child(action("show browser", "launch",
           "Bring the browser window forward. The only thing that starts it."))
@@ -466,7 +474,6 @@ export default class Powr extends View {
   renderSpacrPage(t) {
     const line = (text) => div().text_size(12).text_color(t.dim).child(text);
     return v_flex().gap(8)
-      .child(div().text_color(t.foreground).child("Spacr"))
       .child(line("Left press: select a project, fold or unfold a folder."))
       .child(line("Right press on a project's icon: its colour and glyph."))
       .child(line("Right press on the rest of a project's row: Herdr's own menu."))
@@ -480,11 +487,12 @@ export default class Powr extends View {
     const t = theme();
     this.publishAccent();
     const on = this.modules();
-    const page = this.page && on[this.page] ? this.page : null;
-    const body = v_flex().flex_1().min_w(0).h_full().p(16).gap(10)
-      .child(page === "browsr" ? this.renderBrowsrPage(t)
-        : page === "spacr" ? this.renderSpacrPage(t)
-        : div().text_color(t.dim).child("Switch a module on to see its page."));
+    const m = ALL.find((m) => m.id === this.page) ?? ALL[0];
+    const body = v_flex().flex_1().min_w(0).h_full().p(16).gap(12)
+      .child(this.renderHeader(t, m, on[m.id]))
+      .child(!on[m.id] ? div().text_color(t.dim).child(m.about)
+        : m.id === "browsr" ? this.renderBrowsrPage(t)
+        : this.renderSpacrPage(t));
     return h_flex()
       .id("root")
       .size_full()
