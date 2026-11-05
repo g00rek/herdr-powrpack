@@ -40,7 +40,7 @@ function find(node, id) {
 
 const ALL = [
 	{ id: "browsr", name: "Browsr", icon: "mods/powr/browsr.svg",
-		about: "A browser for your agents: one tab group per project." },
+		about: "A tab group for every space, shown as you switch spaces." },
 	{ id: "spacr", name: "Spacr", icon: "mods/powr/spacr.svg",
 		about: "Your projects in folders, each with its own colour and icon." },
 ];
