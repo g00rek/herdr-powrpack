@@ -468,6 +468,21 @@ test('a switch that names no colour only collapses, as it always did', async () 
 		harness.state.groups.filter(g => !g.collapsed).map(g => g.title), ['api']);
 });
 
+test('a switch with folding off leaves the other groups open', async () => {
+	const harness = await boot({ windows: [1] });
+	await harness.deliver(workspaceSet(SESSION, ['w16', 'api'], ['w1R', 'web']));
+	await harness.deliver({
+		type: 'workspace', event: 'focused', session_id: SESSION,
+		workspace_id: 'w16', label: 'api', color: 'orange', rest: 'grey', fold: false,
+	});
+	await harness.deliver({
+		type: 'workspace', event: 'focused', session_id: SESSION,
+		workspace_id: 'w1R', label: 'web', color: 'orange', rest: 'grey', fold: false,
+	});
+	assert.deepEqual(
+		harness.state.groups.filter(g => !g.collapsed).map(g => g.title).sort(), ['api', 'web']);
+});
+
 test('a Herdr that is still running does not lose its groups', async () => {
 	// Two Herdrs side by side is a supported setup: the bridge names a session
 	// only when it is not answering, and nothing else may be taken.

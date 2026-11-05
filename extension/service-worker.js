@@ -262,7 +262,7 @@ async function syncWorkspaceSet(message) {
 	await saveState();
 }
 
-async function activateWorkspace(workspaceId, label, sessionId, mark, rest) {
+async function activateWorkspace(workspaceId, label, sessionId, mark, rest, fold = true) {
 	const key = workspaceKey(sessionId, workspaceId);
 	const group = await ensureGroup(sessionId, workspaceId, label);
 	const tabs = await chrome.tabs.query({ groupId: group.id });
@@ -283,8 +283,10 @@ async function activateWorkspace(workspaceId, label, sessionId, mark, rest) {
 		const current = otherKey === key;
 		const color = current ? here : away;
 		try {
+			// Folding off: the one you arrive at still opens, the rest stay
+			// as they are.
 			await chrome.tabGroups.update(otherGroupId, {
-				collapsed: !current,
+				...(current || fold ? { collapsed: !current } : {}),
 				...(color ? { color } : {}),
 			});
 		} catch {}
@@ -406,7 +408,7 @@ async function handleMessage(message) {
 			}
 			if (message.event === 'focused')
 				await activateWorkspace(message.workspace_id, message.label,
-					message.session_id, message.color, message.rest);
+					message.session_id, message.color, message.rest, message.fold !== false);
 			if (message.event === 'closed') {
 				await closeWorkspaceGroup(workspaceKey(message.session_id, message.workspace_id));
 				await saveState();

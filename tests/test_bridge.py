@@ -75,6 +75,7 @@ class BridgeTests(unittest.TestCase):
                     "label": "My app",
                     "color": "blue",
                     "rest": "grey",
+                    "fold": True,
                 })
 
 
@@ -1042,6 +1043,17 @@ class BridgeTests(unittest.TestCase):
                 message = bridge.focused_message("sp2", "notes")
         self.assertEqual(message["event"], "focused")
         self.assertEqual((message["color"], message["rest"]), ("cyan", "grey"))
+
+    def test_a_switch_says_whether_the_other_groups_fold(self):
+        """Folding is the default; the Powr panel can turn it off."""
+        for stored, fold in (({}, True), ({"browsr.fold": False}, False)):
+            with tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                (home / "shared.json").write_text(json.dumps(stored))
+                with patch.object(bridge, "app_home", lambda: home), \
+                        patch.object(bridge, "herdr_session_id", return_value="/run/h.sock"):
+                    message = bridge.focused_message("sp2", "notes")
+            self.assertIs(message["fold"], fold)
 
     def test_an_accent_chromium_never_heard_of_is_not_sent_to_it(self):
         """Chromium refuses anything outside its nine names, and a refused

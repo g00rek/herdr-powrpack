@@ -766,6 +766,9 @@ GROUP_COLOR = "grey"
 # the mark follows. Blue only until it has — the first draw of the button
 # writes it, a second after the window opens.
 ACCENT_KEY = "browsr.accent"
+# Whether the groups you are not in fold away on a switch. Set in the Powr
+# panel; folding unless it says otherwise.
+FOLD_KEY = "browsr.fold"
 ACCENT_FALLBACK = "blue"
 GROUP_COLOR_NAMES = frozenset({
     "grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange",
@@ -796,6 +799,7 @@ def focused_message(workspace_id, label=None, session_id=None):
         "label": label or workspace_id,
         "color": accent_color(),
         "rest": GROUP_COLOR,
+        "fold": app_shared().get(FOLD_KEY) is not False,
     }
 
 

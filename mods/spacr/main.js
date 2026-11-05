@@ -203,6 +203,13 @@ export default class PowrSpaces extends View {
 		cx.notify();
 	}
 
+	/** The folder background's strength, as hex alpha; null for none. Set in Powr. */
+	wash() {
+		const strength = { none: null, light: "14", medium: "22", strong: "38" };
+		const chosen = shared("spacr.wash");
+		return chosen in strength ? strength[chosen] : strength.medium;
+	}
+
 	/** Whether Browsr is switched on in the Powr panel. */
 	browsrOn() {
 		const modules = shared(MODULES);
@@ -563,9 +570,9 @@ export default class PowrSpaces extends View {
 	 * for a group that was never made.
 	 */
 	toggleBrowser(space, cx) {
-		const chosen = { ...this.browsers() };
-		if (chosen[space]) delete chosen[space];
-		else chosen[space] = true;
+		// Off is written down, not forgotten: a space missing from the list
+		// is a new one, and Powr turns new ones on when its setting says so.
+		const chosen = { ...this.browsers(), [space]: this.browsers()[space] !== true };
 		setShared(ON, chosen);
 		cx.spawn(async () => {
 			// Nothing to report if it fails: the browser may not be running,
@@ -1011,7 +1018,7 @@ export default class PowrSpaces extends View {
 			// on it carry their own colours too.
 			const tint = folder.color ? (MARK[folder.color] ?? folder.color) : t.foreground;
 			const card = v_flex().gap(1).rounded(6)
-				.when(/^#[0-9a-f]{6}$/i.test(tint), (el) => el.bg(`${tint}22`))
+				.when(/^#[0-9a-f]{6}$/i.test(tint) && this.wash() !== null, (el) => el.bg(`${tint}${this.wash()}`))
 				.child(this.folderHead(t, folder, inside));
 			if (!folder.folded && inside.length) {
 				const box = v_flex().gap(1).pb(2).pl(8);

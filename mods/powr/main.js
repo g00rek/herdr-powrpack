@@ -1,6 +1,6 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { exec, focused, theme, home, notify, run, props, shared, setShared,
+import { exec, focused, spaces, theme, home, notify, run, props, shared, setShared,
 	closeOverlay, layout, openOverlay, readTextFile, writeTextFile } from "herdr";
 import { swapMod } from "./layout-swap.js";
 
@@ -27,6 +27,11 @@ const ASK_EVERY = 1000;
 
 // Which projects have a browser: { [spaceId]: true }. Read by bridge.py too.
 const ON = "browsr.on";
+// Settings, kept where the app keeps what its panels remember.
+const NEW_ON = "browsr.new-on";       // new spaces and worktrees get a browser
+const WHEN_ASKED = "browsr.when-asked"; // "ask" | "on" | "never"
+const FOLD = "browsr.fold";           // other groups fold on a switch
+const WASH = "spacr.wash";            // folder background: none|light|medium|strong
 
 // The modules this panel switches, in the order the column lists them.
 function find(node, id) {
@@ -112,7 +117,11 @@ export default class Powr extends View {
     this.page = "browsr";
     if (this.isButton()) {
       this.answered = null; // the id of the last question dealt with
-      cx.timer.every(ASK_EVERY, (cx) => this.pickUpQuestion(cx));
+      cx.timer.every(ASK_EVERY, (cx) => {
+        this.pickUpQuestion(cx);
+        this.recordNewSpaces(cx);
+      });
+      this.recordNewSpaces(cx);
     } else {
       setShared(PANEL, { open: true, changed: Date.now() });
       cx.timer.every(STATUS_EVERY, (cx) => this.refresh(cx));
@@ -156,6 +165,12 @@ export default class Powr extends View {
       // nobody is waiting on should not appear.
       if (asked.at && Date.now() / 1000 - asked.at > 25) return;
       this.answered = asked.id;
+      const mode = shared(WHEN_ASKED) ?? "ask";
+      if (mode === "on" || mode === "never") {
+        this.reply(asked, mode === "on");
+        cx.notify();
+        return;
+      }
       openOverlay({ mod: "powr", kind: "dialog", width: 430, props: { ask: asked } });
       cx.notify();
     });
@@ -163,7 +178,12 @@ export default class Powr extends View {
 
   /** Write the answer back, and turn the project on when it is yes. */
   answer(yes, cx) {
-    const asked = this.ask;
+    this.reply(this.ask, yes);
+    const overlay = props()?.overlay;
+    if (overlay) closeOverlay(overlay);
+  }
+
+  reply(asked, yes) {
     if (yes) {
       setShared(ON, { ...this.browsers(), [asked.space]: true });
     }
@@ -174,8 +194,24 @@ export default class Powr extends View {
         // Browsr gives up on its own; nothing here can do better.
       }
     });
-    const overlay = props()?.overlay;
-    if (overlay) closeOverlay(overlay);
+  }
+
+  /**
+   * A space never seen before gets the browser or not, as the setting says.
+   * Each one is written down the first time it shows up, on or off, so a
+   * space someone turned off is never mistaken for a new one.
+   */
+  recordNewSpaces(cx) {
+    const chosen = this.browsers();
+    const fresh = spaces().filter((space) => space.id && !(space.id in chosen));
+    if (!fresh.length) return;
+    const on = shared(NEW_ON) === true;
+    setShared(ON, { ...chosen, ...Object.fromEntries(fresh.map((space) => [space.id, on])) });
+    if (on && this.modules().browsr !== false) {
+      cx.spawn(async () => {
+        try { await exec(BRIDGE, ["--app", "sync"]); } catch {}
+      });
+    }
   }
 
   renderAsk(t) {
@@ -471,7 +507,46 @@ export default class Powr extends View {
       .child(row("Show browser", "launch", "Jump to the browser window."))
       .child(row("Restart", "restart", "Close the browser and open it again."))
       .when(fix !== null, (el) => el.child(row(fix, "sync", "Match the tab groups to your spaces.")))
-      .child(div().pt(6).text_size(12).text_color(t.dim).child(words));
+      .child(div().pt(6).text_size(12).text_color(t.dim).child(words))
+      .child(this.section(t, "Settings"))
+      .child(this.setting(t, "New spaces", "Turn the browser on for new spaces and worktrees.",
+        this.toggle(t, "new-on", shared(NEW_ON) === true,
+          (_event, cx) => { setShared(NEW_ON, shared(NEW_ON) !== true); cx.notify(); })))
+      .child(this.setting(t, "Agent asks", "When a space without a browser needs one.",
+        this.choice(t, "when-asked", shared(WHEN_ASKED) ?? "ask",
+          [["ask", "Ask"], ["on", "Turn on"], ["never", "Refuse"]],
+          (value) => setShared(WHEN_ASKED, value))))
+      .child(this.setting(t, "Fold other groups", "Only the current space's tabs stay open.",
+        this.toggle(t, "fold", shared(FOLD) !== false,
+          (_event, cx) => { setShared(FOLD, shared(FOLD) === false); cx.notify(); })));
+  }
+
+  section(t, title) {
+    return div().pt(14).pb(2).text_size(11).text_color(t.dim).child(title.toUpperCase());
+  }
+
+  /** One setting: its name and a short note on the left, its control on the right. */
+  setting(t, name, note, control) {
+    return h_flex().items_center().gap(12).py(4)
+      .child(v_flex().flex_1().min_w(0)
+        .child(div().text_color(t.foreground).child(name))
+        .child(div().text_size(12).text_color(t.dim).child(note)))
+      .child(control);
+  }
+
+  /** A row of mutually exclusive buttons, as Herdr's Settings draws them. */
+  choice(t, id, value, options, pick) {
+    const row = h_flex().flex_none().p(2).gap(2).rounded(7).bg(t.surface);
+    for (const [key, label] of options) {
+      const on = key === value;
+      row.child(div().id(`powr-${id}-${key}`).px(10).py(3).rounded(5).cursor_pointer()
+        .when(on, (el) => el.bg(t.selected))
+        .text_color(on ? t.foreground : t.dim)
+        .hover((s) => s.text_color(t.foreground))
+        .on_click((_event, cx) => { pick(key); cx.notify(); })
+        .child(label));
+    }
+    return row;
   }
 
   renderSpacrPage(t) {
@@ -482,7 +557,12 @@ export default class Powr extends View {
       .child(line("Right press on the rest of a project's row: Herdr's own menu."))
       .child(line("Right press on a folder: its name, colour, glyph and Delete."))
       .child(line("Browser mark on a row: browser on or off for that space."))
-      .child(line("Drag a project onto a folder to put it there, below the list to take it out."));
+      .child(line("Drag a project onto a folder to put it there, below the list to take it out."))
+      .child(this.section(t, "Settings"))
+      .child(this.setting(t, "Folder background", "How strongly a folder's colour shows behind it.",
+        this.choice(t, "wash", shared(WASH) ?? "medium",
+          [["none", "None"], ["light", "Light"], ["medium", "Medium"], ["strong", "Strong"]],
+          (value) => setShared(WASH, value))));
   }
 
   render() {
