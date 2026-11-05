@@ -336,24 +336,24 @@ export default class Powr extends View {
   state() {
     const line = (words, fix = null) => ({ words, fix });
     if (this.note) return line(this.note);
-    if (!this.status) return line("asking…");
-    if (!this.status.browser) return line("not running");
-    if (!this.status.bridge) return line("running, but its extension is not answering");
+    if (!this.status) return line("Checking…");
+    if (!this.status.browser) return line("The browser is closed. Show browser starts it.");
+    if (!this.status.bridge) return line("The browser is open, but its extension is not responding. Restart fixes it.");
     // The browser outlives any one Herdr, and the part that follows your
     // spaces is a separate program. It can be gone while everything else
     // looks fine, and then nothing moves when you switch. Starting it again
     // is what brings the follower back, and that button is always there.
-    if (this.status.following === false) return line("running, but nothing is following your spaces");
+    if (this.status.following === false) return line("The browser is open, but it is not following your spaces. Restart fixes it.");
     // The commonest surprise by far: the project you are looking at is
     // turned off below, so switching to it moves nothing and the browser
     // keeps showing whatever came before. Silence looks exactly like a
     // fault, so say it. Nothing to repair — it is a choice, made in the
     // list underneath.
     const here = focused()?.space;
-    if (here && this.browsers()[here] !== true) return line("this project has no browser — nothing follows here");
+    if (here && this.browsers()[here] !== true) return line("This space has the browser turned off, so the tabs stay as they were.");
     const strip = this.status.strip ?? {};
     if (strip.windows && strip.windows !== 1) {
-      return line(`${strip.windows} windows — there should be one`, "resync");
+      return line(`The browser has ${strip.windows} windows instead of one. Resync fixes it.`, "resync");
     }
     // By name, never by how many. Counting said "one per project" while
     // four projects had no group at all and three strangers sat in the
@@ -366,15 +366,15 @@ export default class Powr extends View {
     const extra = titles.filter((name) => !wanted.includes(name));
     if (missing.length) {
       return line(missing.length === 1
-        ? `${missing[0]} has no group`
-        : `${missing.length} projects have no group`, "resync");
+        ? `${missing[0]} has no tab group yet. Resync adds it.`
+        : `${missing.length} spaces have no tab group yet. Resync adds them.`, "resync");
     }
     if (extra.length) {
       return line(extra.length === 1
-        ? `a group nothing wants: ${extra[0]}`
-        : `${extra.length} groups nothing wants`, "resync");
+        ? `There is a leftover tab group, ${extra[0]}, with no space. Resync removes it.`
+        : `There are ${extra.length} leftover tab groups with no space. Resync removes them.`, "resync");
     }
-    return line(`${titles.length} groups, one per project`);
+    return line(`All good: ${titles.length} spaces, each with its own tab group.`);
   }
 
   /** Just the line, for the header. */
@@ -474,7 +474,7 @@ export default class Powr extends View {
         .when(fix !== null, (el) => el.child(action(fix, "sync",
           "Make the groups match the projects that have a browser."))))
       .child(div().text_size(11).text_color(t.dim)
-        .child("Which projects have a browser is set on the project list: the browser mark on each row."));
+        .child("Turn the browser on or off for a space with the browser mark on its row in the list."));
   }
 
   renderSpacrPage(t) {
