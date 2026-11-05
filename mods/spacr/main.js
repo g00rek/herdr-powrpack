@@ -618,10 +618,9 @@ export default class PowrSpaces extends View {
 					props: { tab: "space", target: { id: space.id } },
 				});
 			})
-			// A project's tile is filled; a branch beside it gets the same
-			// tile drawn as an outline. Same shape and same colour say they
-			// belong together; filled against hollow says which one is the
-			// project, without either of them having to shrink or move.
+			// A project's tile is filled; a branch beside it shows only its
+			// icon, in the project's colour, with no tile around it — as
+			// Herdr's own list draws a worktree.
 			.child(
 				h_flex()
 					.id(`powr-tile-${space.id}`)
@@ -642,10 +641,8 @@ export default class PowrSpaces extends View {
 						this.openLook(space.id, from?.name ?? null);
 					})
 					.when(!from, (el) => el.bg(this.colorOf(space, null)))
-					.when(Boolean(from), (el) =>
-						el.border_1().border_color(this.colorOf(space, from)))
 					.child(icon
-						? svg(`mods/spacr/icons/${icon}.svg`).size(from ? 11 : 14)
+						? svg(`mods/spacr/icons/${icon}.svg`).size(from ? 13 : 14)
 							.text_color(from ? this.colorOf(space, from) : "#ffffff")
 						: div().text_size(from ? 11 : 13)
 							.text_color(from ? this.colorOf(space, from) : "#ffffff")
