@@ -116,8 +116,11 @@ const BRIDGE = `${home()}/Projects/browsr/bridge.py`;
 // nothing; a branch is news only when it is not the trunk.
 const TRUNK = new Set(["main", "master", "trunk", "develop"]);
 
-// How often to look again for projects whose folder we have not asked about.
-const SCAN_EVERY = 20000;
+// How often to look for spaces git has not been asked about: often, so a new
+// one is placed before anyone sees it; asking is skipped when there is none.
+const NEW_EVERY = 250;
+// The longest a new space stays hidden while git is asked about it.
+const NEW_WAIT = 2000;
 
 /** The last part of a path. */
 function base(path) {
@@ -191,8 +194,16 @@ export default class PowrSpaces extends View {
 		// instead of loose in the list.
 		this.repos = {};
 		this.scanning = false;
+		// A space made while the list is up waits, a moment at most, for git
+		// to say what it is — so a worktree appears under its project instead
+		// of loose first and pulled in later.
+		this.shown = new Set(spaces().map((space) => space.id));
+		this.born = {};
 		this.scan(cx);
-		cx.timer.every(SCAN_EVERY, (cx) => this.scan(cx));
+		cx.timer.every(NEW_EVERY, (cx) => {
+			this.scan(cx);
+			if (spaces().some((space) => !this.shown.has(space.id))) cx.notify();
+		});
 		// `spacr.reset-branch-icons`, from a key or the command line.
 		cx.spawn(async (cx) => {
 			for (;;) {
@@ -276,10 +287,14 @@ export default class PowrSpaces extends View {
 	scan(cx) {
 		if (this.scanning) return;
 		const todo = [];
-		for (const space of spaces()) {
+		// Runs four times a second: read the panes once, not once per space.
+		const outer = this.memo;
+		this.memo = outer ?? { spaces: spaces(), panes: panes(), cwd: new Map(), owner: new Map() };
+		for (const space of this.memo.spaces) {
 			const cwd = this.cwdOf(space);
 			if (cwd && !(cwd in this.repos)) todo.push({ space, cwd });
 		}
+		this.memo = outer;
 		if (!todo.length) return;
 		this.scanning = true;
 		cx.spawn(async (cx) => {
@@ -1028,7 +1043,17 @@ export default class PowrSpaces extends View {
 	renderList(t) {
 		const here = focused()?.space;
 		const { list, of } = this.folders();
-		const all = this.memo.spaces;
+		const now = Date.now();
+		const all = this.memo.spaces.filter((space) => {
+			if (this.shown.has(space.id)) return true;
+			this.born[space.id] ??= now;
+			const cwd = this.cwdOf(space);
+			if ((cwd && cwd in this.repos) || now - this.born[space.id] > NEW_WAIT) {
+				this.shown.add(space.id);
+				return true;
+			}
+			return false;
+		});
 		// Which folder a row is in — its project's folder, so a project and
 		// the branches beside it are never split between two places.
 		const folderOf = (space) => of[this.ownerOf(space).id];
