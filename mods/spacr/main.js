@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, focused, theme, run, shared, setShared, openOverlay, closeOverlay,
-	exec, props, readTextFile, writeTextFile, home, appHome } from "herdr";
+	exec, props, readTextFile, writeTextFile, home, appHome, nextCommand } from "herdr";
 
 // The list of projects, drawn by us rather than by Herdr, so that things
 // Herdr knows nothing about can appear on a project's own row. The first of
@@ -99,6 +99,10 @@ const SKIP = "browsr.skip";
 // says otherwise.
 const MODULES = "powr.modules";
 
+// What a branch wears until someone picks otherwise: Herdr's own branch mark,
+// the one its list puts beside a worktree.
+const BRANCH_ICON = "branch";
+
 // Browsr's own command, for the one thing this list changes that lives
 // outside Herdr. Change this line if your checkout is elsewhere.
 const BRIDGE = `${home()}/Projects/browsr/bridge.py`;
@@ -185,6 +189,13 @@ export default class PowrSpaces extends View {
 		this.scanning = false;
 		this.scan(cx);
 		cx.timer.every(SCAN_EVERY, (cx) => this.scan(cx));
+		// `spacr.reset-branch-icons`, from a key or the command line.
+		cx.spawn(async (cx) => {
+			for (;;) {
+				const command = await nextCommand();
+				if (command === "reset-branch-icons") this.resetBranchIcons(cx);
+			}
+		});
 		cx.notify();
 	}
 
@@ -369,9 +380,25 @@ export default class PowrSpaces extends View {
 	 * every project one whether or not anyone chose it: honouring those put
 	 * three worktrees of one repository in three colours again.
 	 */
-	iconOf(space) {
+	/** The icon picked for a project, or null. */
+	pickedIcon(space) {
 		const stored = shared(SPACE_ICON_OF);
 		return (stored && typeof stored === "object" ? stored[space.id] : null) || null;
+	}
+
+	/** What a row wears: its pick, else Herdr's branch mark for a branch. */
+	iconOf(space, from) {
+		return this.pickedIcon(space) || (from ? BRANCH_ICON : null);
+	}
+
+	/** Put every branch back on the branch mark. */
+	resetBranchIcons(cx) {
+		const branches = spaces().filter((space) => this.ownerOf(space).id !== space.id);
+		const stored = shared(SPACE_ICON_OF);
+		const next = { ...(stored && typeof stored === "object" ? stored : {}) };
+		for (const space of branches) delete next[space.id];
+		setShared(SPACE_ICON_OF, next);
+		cx.notify();
 	}
 
 	wearSpaceIcon(id, icon, cx) {
@@ -551,7 +578,7 @@ export default class PowrSpaces extends View {
 	row(t, space, inFront, mark, from) {
 		const on = this.browsers()[space.id] === true;
 		const letter = (space.name || "?").trim().charAt(0).toUpperCase() || "?";
-		const icon = this.iconOf(space);
+		const icon = this.iconOf(space, from);
 		const landing = this.over && this.over.kind === "space" && this.over.id === space.id;
 		const lifted = this.pressed === space.id;
 		return h_flex()
@@ -827,7 +854,7 @@ export default class PowrSpaces extends View {
 				.size(26).flex_none().rounded(6)
 				.items_center().justify_center()
 				.cursor_pointer()
-				.tooltip(name === plain ? "plain" : name.replace(/^folder-/, "").replace(/-/g, " "))
+				.tooltip(name === plain && name === "folder" ? "plain" : name.replace(/^folder-/, "").replace(/-/g, " "))
 				.when((chosen ?? plain) === name, (el) => el.bg(t.selected))
 				.hover((s) => s.bg(t.hover))
 				.on_click((_event, cx) => pick(name === plain ? null : name, cx))
@@ -890,10 +917,13 @@ export default class PowrSpaces extends View {
 				: this.glyphs(t, {
 				key: `sp-${space.id}`,
 				scroll: GRID_HEIGHT,
-				names: this.query ? this.matches(this.query) : SPACE_ICONS,
-				chosen: this.iconOf(space),
-				plain: null,
-				letter: (space.name || "?").trim().charAt(0).toUpperCase() || "?",
+				// A branch's first choice is the branch mark it wears unpicked;
+				// a project's is its own letter.
+				names: this.query ? this.matches(this.query)
+					: from ? [BRANCH_ICON, ...SPACE_ICONS] : SPACE_ICONS,
+				chosen: this.pickedIcon(space),
+				plain: from ? BRANCH_ICON : null,
+				letter: from ? null : (space.name || "?").trim().charAt(0).toUpperCase() || "?",
 				tint: t.foreground,
 				pick: (name, cx) => this.wearSpaceIcon(space.id, name, cx),
 			}),
