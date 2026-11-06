@@ -305,6 +305,27 @@ test('open_tab makes a background tab in the workspace group and never touches t
 	assert.equal(harness.state.windows.length, 1);
 });
 
+test('open_tab asked to focus brings the tab and its group to the front', async () => {
+	const harness = await boot({ windows: [1] });
+	await harness.deliver(created('w1R', 'web'));
+	const group = harness.state.groups.find(item => item.title === 'web');
+	group.collapsed = true;
+
+	const reply = await harness.deliver({
+		type: 'open_tab',
+		session_id: SESSION,
+		workspace_id: 'w1R',
+		url: 'https://example.com/docs',
+		focus: true,
+	});
+
+	assert.equal(reply.ok, true);
+	const tab = harness.state.tabs.find(item => item.url === 'https://example.com/docs');
+	assert.equal(tab.active, true);
+	assert.equal(tab.groupId, group.id);
+	assert.equal(harness.state.groups.find(item => item.id === group.id).collapsed, false);
+});
+
 test('open_tab refuses addresses that are not web pages', async () => {
 	const harness = await boot({ windows: [1] });
 	await harness.deliver(created('w1R', 'web'));

@@ -32,7 +32,12 @@ on and off and set up.
 - Browsr page: **Show browser** raises the browser (starting it), **Restart**
   restarts it and reloads the extension, **Resync** appears only on a fault.
   Status lines end in "Click X to fix it." Settings: New spaces (switch),
-  Agent asks (Ask / Turn on / Refuse), Fold other groups (switch, on).
+  Agent asks (Ask / Turn on / Refuse), Fold other groups (switch, on),
+  Herdr links (switch, off): `bridge.py links on` makes a hidden
+  `powr-links.desktop` the system's http/https handler, remembering the old
+  one; a link opened while Hyprland's active window has class `herdr-app`
+  goes to the focused space's group in front, every other link to the old
+  handler through `gtk-launch`.
 - Spacr page: how to use the list, and Folder background (None / Light /
   Medium / Strong).
 - Switching Spacr off swaps the layout block back to Herdr's `spaces`.

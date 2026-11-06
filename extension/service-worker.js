@@ -349,8 +349,17 @@ async function openTab(message) {
 	if (!isOpenableUrl(message.url)) throw new Error('Only http(s) and about:blank tabs can be opened');
 	const group = await ensureGroup(message.session_id, message.workspace_id, message.workspace_label);
 	const win = await getManagedWindow();
-	const tab = await chrome.tabs.create({ windowId: win.id, url: message.url, active: false });
+	// In the background unless asked otherwise. An agent's tab must never
+	// take the user's place in the strip; a link the user clicked in Herdr is
+	// the page they want to look at, so it comes to the front.
+	const show = message.focus === true;
+	const tab = await chrome.tabs.create({ windowId: win.id, url: message.url, active: show });
 	await chrome.tabs.group({ groupId: group.id, tabIds: [tab.id] });
+	if (show) {
+		await chrome.tabGroups.update(group.id, { collapsed: false });
+		await chrome.windows.update(win.id, { focused: true });
+	}
+	await saveState();
 	return { tab_id: tab.id, url: message.url };
 }
 

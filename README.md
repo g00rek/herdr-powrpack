@@ -85,6 +85,7 @@ In the panel:
 | **New spaces** | Turn the browser on for every new space and worktree. |
 | **Agent asks** | What happens when an agent needs a browser in a space that has none: ask you, turn it on, or refuse. |
 | **Fold other groups** | Only the current space's tabs stay open. |
+| **Herdr links** | Links you click in Herdr open in Browsr, in the current space's group, and the browser comes to the front. Links from other programs, and from spaces without a browser, still go to your usual browser. |
 
 Under the buttons, one line says what is wrong, if anything, and which button
 fixes it.
@@ -160,7 +161,8 @@ If your browser is not found, point at it with
 rm -r ~/.config/herdr-app/mods/powr ~/.config/herdr-app/mods/spacr
 ```
 
-Then switch back to your old layout (`ctrl-shift-l`) and delete `main-powr`,
+Cleanup also gives web links back to your previous browser if Herdr links
+was on. Then switch back to your old layout (`ctrl-shift-l`) and delete `main-powr`,
 and remove `alt-b` from `~/.config/herdr-app/keys.json`. Cleanup leaves the
 browser profile, which holds your history and logins, and prints where it is.
 

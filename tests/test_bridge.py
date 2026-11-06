@@ -1411,5 +1411,81 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(free.returncode, 0, "the lock was not released")
 
 
+class LinkTests(unittest.TestCase):
+    """Links clicked in Herdr go to Browsr; every other link goes where it went."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        root = Path(self.directory.name)
+        (root / "state" / "browsr").mkdir(parents=True)
+        self.defaults = {kind: "chromium.desktop" for kind in bridge.LINK_TYPES}
+        self.patches = [
+            patch.object(bridge, "STATE_DIR", root / "state" / "browsr"),
+            patch.dict(os.environ, {"XDG_DATA_HOME": str(root / "data")}),
+            patch.object(bridge.shutil, "which", lambda name: f"/usr/bin/{name}"),
+            patch.object(bridge, "default_handler", lambda kind: self.defaults.get(kind)),
+            patch.object(bridge, "set_default_handler",
+                         lambda desktop, kinds: self.defaults.update({k: desktop for k in kinds})),
+        ]
+        for item in self.patches:
+            item.start()
+
+    def tearDown(self):
+        for item in reversed(self.patches):
+            item.stop()
+        self.directory.cleanup()
+
+    def test_switching_on_and_off_puts_the_old_browser_back(self):
+        bridge.links_on()
+        self.assertTrue(bridge.links_taken())
+        self.assertIn("handle-link %u", bridge.links_desktop_file().read_text())
+        bridge.links_on()  # a second time must not remember itself as "before"
+        bridge.links_off()
+        self.assertEqual(set(self.defaults.values()), {"chromium.desktop"})
+        self.assertFalse(bridge.links_desktop_file().exists())
+
+    def test_the_old_browser_survives_cleanup_of_the_state_directory(self):
+        bridge.links_on()
+        self.assertNotIn(bridge.STATE_DIR, bridge.links_saved_file().parents)
+
+    def decide(self, url, front=True, on=True, space="sp1", spaces=("sp1",), alive=True):
+        with patch.object(bridge, "herdr_in_front", lambda: front), \
+                patch.object(bridge, "browsr_switched_on", lambda: on), \
+                patch.object(bridge, "app_focused_space", lambda: space), \
+                patch.object(bridge, "spaces_with_a_browser", lambda known=None: set(spaces)), \
+                patch.object(bridge, "bridge_alive", lambda: alive):
+            return bridge.link_goes_to_browsr(url)
+
+    def test_a_link_clicked_in_herdr_goes_to_the_space_in_front(self):
+        self.assertEqual(self.decide("https://example.com/a"), "sp1")
+        self.assertEqual(self.decide("http://localhost:3000"), "sp1")
+
+    def test_every_other_link_goes_to_the_old_browser(self):
+        self.assertIsNone(self.decide("https://example.com", front=False))
+        self.assertIsNone(self.decide("https://example.com", on=False))
+        self.assertIsNone(self.decide("https://example.com", spaces=()))
+        self.assertIsNone(self.decide("https://example.com", alive=False))
+        self.assertIsNone(self.decide("mailto:someone@example.com"))
+        self.assertIsNone(self.decide("file:///etc/passwd"))
+
+    def test_a_link_browsr_cannot_take_still_opens(self):
+        bridge.links_on()
+        launched = []
+        with patch.object(bridge, "link_goes_to_browsr", lambda url: "sp1"), \
+                patch.object(bridge, "ask_extension", side_effect=RuntimeError("down")), \
+                patch.object(bridge.subprocess, "Popen", lambda args, **_: launched.append(args)):
+            bridge.handle_link("https://example.com")
+        self.assertEqual(launched, [["/usr/bin/gtk-launch", "chromium.desktop", "https://example.com"]])
+
+    def test_a_clicked_link_opens_in_front_in_browsr(self):
+        asked = []
+        with patch.object(bridge, "link_goes_to_browsr", lambda url: "sp1"), \
+                patch.object(bridge, "ask_extension",
+                             lambda kind, space, failure, **extra: asked.append((kind, space, extra))), \
+                patch.object(bridge, "show_window", lambda: True):
+            bridge.handle_link("https://example.com")
+        self.assertEqual(asked, [("open_tab", "sp1", {"url": "https://example.com", "focus": True})])
+
+
 if __name__ == "__main__":
     unittest.main()

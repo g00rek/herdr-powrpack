@@ -31,6 +31,7 @@ const ON = "browsr.on";
 const NEW_ON = "browsr.new-on";       // new spaces and worktrees get a browser
 const WHEN_ASKED = "browsr.when-asked"; // "ask" | "on" | "never"
 const FOLD = "browsr.fold";           // other groups fold on a switch
+const LINKS = "browsr.links";         // links clicked in Herdr open in Browsr
 const WASH = "spacr.wash";            // folder background: none|light|medium|strong
 
 // The modules this panel switches, in the order the column lists them.
@@ -518,7 +519,10 @@ export default class Powr extends View {
           (value) => setShared(WHEN_ASKED, value))))
       .child(this.setting(t, "Fold other groups", "Only the current space's tabs stay open.",
         this.toggle(t, "fold", shared(FOLD) !== false,
-          (_event, cx) => { setShared(FOLD, shared(FOLD) === false); cx.notify(); })));
+          (_event, cx) => { setShared(FOLD, shared(FOLD) === false); cx.notify(); })))
+      .child(this.setting(t, "Herdr links", "Open links clicked in Herdr in Browsr.",
+        this.toggle(t, "links", shared(LINKS) === true,
+          (_event, cx) => this.switchLinks(shared(LINKS) !== true, cx))));
   }
 
   section(t, title) {
@@ -526,6 +530,24 @@ export default class Powr extends View {
   }
 
   /** One setting: its name and a short note on the left, its control on the right. */
+  /**
+   * Make Browsr the system's handler for web links, or give them back.
+   * Stored only once the bridge has done it, so the switch never shows
+   * a state the system is not in.
+   */
+  switchLinks(on, cx) {
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec(BRIDGE, ["--app", "links", on ? "on" : "off"]);
+        if (r.code !== 0) throw new Error(r.stderr.trim().split("\n").pop() || "Could not change links");
+        setShared(LINKS, on);
+      } catch (error) {
+        notify({ title: "Browsr", body: String(error?.message ?? error), level: "error" });
+      }
+      cx.notify();
+    });
+  }
+
   setting(t, name, note, control) {
     return h_flex().items_center().gap(12).py(4)
       .child(v_flex().flex_1().min_w(0)

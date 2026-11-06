@@ -1010,6 +1010,9 @@ def cleanup():
     command should decide that for them.
     """
     removed = []
+    if links_desktop_file().exists():
+        links_off()
+        removed.append(str(links_desktop_file()))
     manifests = list(NATIVE_HOST_MANIFESTS or native_host_manifests())
     if NATIVE_HOST_MANIFESTS is None:
         manifests.append(LEGACY_HOST_MANIFEST)
@@ -1631,6 +1634,184 @@ def open_tab(raw_url):
     print(json.dumps(response.get("result") or {}))
 
 
+# ---- Links clicked in Herdr ---------------------------------------------
+#
+# Herdr hands a clicked link to the system, which opens it in the default
+# browser; it has no setting of its own for this. So the pack can register
+# itself as that default, and decide per link: clicked while Herdr is the
+# window in front, it opens in Browsr, in the group of the space you are in;
+# from anywhere else, it goes on to the browser that was the default before.
+
+LINKS_DESKTOP = "powr-links.desktop"
+LINK_TYPES = ("x-scheme-handler/http", "x-scheme-handler/https")
+HERDR_WINDOW_CLASS = "herdr-app"
+
+
+def links_desktop_file():
+    data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+    return data / "applications" / LINKS_DESKTOP
+
+
+def links_saved_file():
+    # Beside the state directory, not in it: cleanup removes that directory,
+    # and this is what puts the person's own browser back.
+    return STATE_DIR.parent / "browsr-links-before.json"
+
+
+def default_handler(kind):
+    try:
+        result = subprocess.run(["xdg-mime", "query", "default", kind],
+                                capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() or None
+
+
+def set_default_handler(desktop, kinds):
+    subprocess.run(["xdg-mime", "default", desktop, *kinds],
+                   capture_output=True, text=True, timeout=5, check=True)
+
+
+def desktop_quote(arg):
+    """One argument of a desktop entry's Exec line, quoted its way, not the shell's."""
+    if not any(c in arg for c in ' \t"\'\\><~|&;$*?#()`'):
+        return arg
+    escaped = arg.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`").replace("$", "\\$")
+    return f'"{escaped}"'
+
+
+def links_taken():
+    return default_handler(LINK_TYPES[-1]) == LINKS_DESKTOP
+
+
+def links_on():
+    """Make the pack the system's handler for web links, remembering the old one."""
+    if not shutil.which("xdg-mime"):
+        raise RuntimeError("xdg-mime is not installed; links cannot be routed")
+    path = links_desktop_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=Powr Pack links\n"
+        "Comment=Links clicked in Herdr open in Browsr; others in your browser\n"
+        f"Exec={desktop_quote(sys.executable)} {desktop_quote(str(ROOT / 'bridge.py'))} --app handle-link %u\n"
+        "MimeType=x-scheme-handler/http;x-scheme-handler/https;\n"
+        "NoDisplay=true\n"
+    )
+    if links_taken():
+        return
+    before = {kind: default_handler(kind) for kind in LINK_TYPES}
+    saved = links_saved_file()
+    saved.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(saved, before)
+    set_default_handler(LINKS_DESKTOP, LINK_TYPES)
+
+
+def links_off():
+    """Give web links back to the browser that had them before."""
+    saved = links_saved_file()
+    try:
+        before = json.loads(saved.read_text())
+    except (OSError, ValueError):
+        before = {}
+    for kind in LINK_TYPES:
+        if default_handler(kind) != LINKS_DESKTOP:
+            continue
+        previous = before.get(kind)
+        if not previous or previous == LINKS_DESKTOP:
+            raise RuntimeError(
+                "Do not know which browser had links before; set it with "
+                f"xdg-mime default <browser>.desktop {kind}")
+        set_default_handler(previous, [kind])
+    saved.unlink(missing_ok=True)
+    links_desktop_file().unlink(missing_ok=True)
+
+
+def herdr_in_front():
+    """Whether the window in front is Herdr's: the link came from there."""
+    hyprctl = shutil.which("hyprctl")
+    if not hyprctl:
+        return False
+    try:
+        result = subprocess.run([hyprctl, "activewindow", "-j"],
+                                capture_output=True, text=True, timeout=3, check=True)
+        return json.loads(result.stdout).get("class") == HERDR_WINDOW_CLASS
+    except (OSError, ValueError, subprocess.SubprocessError, json.JSONDecodeError):
+        return False
+
+
+def link_goes_to_browsr(url):
+    """Which space's group a clicked link belongs in, or None for elsewhere.
+
+    Elsewhere when it is not a web page, when it was not clicked in Herdr,
+    when Browsr is switched off or not running, or when the space in front
+    has no browser — in every one of those the person's own browser is the
+    right place, and a link must never simply disappear.
+    """
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return None
+    if not herdr_in_front() or not browsr_switched_on():
+        return None
+    space = app_focused_space()
+    if not space or space not in spaces_with_a_browser([space]):
+        return None
+    if not bridge_alive():
+        return None
+    return space
+
+
+def open_elsewhere(url):
+    """Hand a link to the browser that was the default before the pack."""
+    try:
+        before = json.loads(links_saved_file().read_text())
+    except (OSError, ValueError):
+        before = {}
+    kind = "x-scheme-handler/http" if url.lower().startswith("http:") else LINK_TYPES[-1]
+    desktop = before.get(kind) or before.get(LINK_TYPES[-1])
+    if not desktop or desktop == LINKS_DESKTOP:
+        raise RuntimeError("No browser to hand the link to; switch Herdr links off in the Powr panel")
+    launcher = shutil.which("gtk-launch")
+    if launcher:
+        subprocess.Popen([launcher, desktop, url], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        subprocess.Popen(["gio", "launch", desktop_path(desktop), url], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def desktop_path(desktop):
+    homes = [os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local/share")]
+    homes += (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":")
+    for home in homes:
+        path = Path(home) / "applications" / desktop
+        if path.exists():
+            return str(path)
+    return desktop
+
+
+def handle_link(url):
+    """What runs when a web link is opened anywhere on the system."""
+    space = link_goes_to_browsr(url)
+    if space:
+        try:
+            ask_extension("open_tab", space, "Chromium did not open the link",
+                          url=url, focus=True)
+            show_window()
+            return
+        except RuntimeError:
+            pass
+    open_elsewhere(url)
+
+
+def print_links():
+    print("on" if links_taken() else "off")
+
+
 def workspace_tabs():
     workspace_id = current_workspace_id()
     response = ask_extension(
@@ -1672,6 +1853,12 @@ def main():
     if len(sys.argv) == 3 and sys.argv[1] == "open-tab":
         open_tab(sys.argv[2])
         return
+    if len(sys.argv) == 3 and sys.argv[1] == "handle-link":
+        handle_link(sys.argv[2])
+        return
+    if len(sys.argv) == 3 and sys.argv[1] == "links":
+        {"on": links_on, "off": links_off, "state": print_links}[sys.argv[2]]()
+        return
     if len(sys.argv) != 2 or sys.argv[1] not in {
         "setup", "launch", "restart", "off", "quit", "sync", "adopt", "status",
         "panel", "cleanup", "watch", "hook", "open-link", "workspace-tabs",
@@ -1681,6 +1868,7 @@ def main():
             "Usage: bridge.py setup|launch|restart|off|quit|sync|adopt|status"
             "|panel|cleanup|watch"
             "|hook|open-link|open-url URL|open-tab URL|workspace-tabs|mcp-endpoint"
+            "|links on|off|state|handle-link URL"
         )
     {
         "setup": setup,
