@@ -168,7 +168,7 @@ export default class Powr extends View {
       this.answered = asked.id;
       const mode = shared(WHEN_ASKED) ?? "ask";
       if (mode === "on" || mode === "never") {
-        this.reply(asked, mode === "on");
+        this.reply(asked, mode === "on", cx);
         cx.notify();
         return;
       }
@@ -179,12 +179,12 @@ export default class Powr extends View {
 
   /** Write the answer back, and turn the project on when it is yes. */
   answer(yes, cx) {
-    this.reply(this.ask, yes);
+    this.reply(this.ask, yes, cx);
     const overlay = props()?.overlay;
     if (overlay) closeOverlay(overlay);
   }
 
-  reply(asked, yes) {
+  reply(asked, yes, cx) {
     if (yes) {
       setShared(ON, { ...this.browsers(), [asked.space]: true });
     }
