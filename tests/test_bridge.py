@@ -40,7 +40,9 @@ def sandboxed_state():
                 patch.object(bridge, "LAUNCH_LOCK", root / "state" / "launch.lock"), \
                 patch.object(bridge, "EXTENSION_DIR", root / "extension"), \
                 patch.object(bridge, "EXTENSION_STAMP", root / "state" / "extension.stamp"), \
-                patch.object(bridge, "PANEL_PANES", root / "state" / "panel-panes.json"):
+                patch.object(bridge, "PANEL_PANES", root / "state" / "panel-panes.json"), \
+                patch.dict(os.environ, {"XDG_DATA_HOME": str(root / "data"),
+                                        "XDG_CONFIG_HOME": str(root / "config")}):
             yield root
 
 
@@ -1414,18 +1416,31 @@ class BridgeTests(unittest.TestCase):
 class LinkTests(unittest.TestCase):
     """Links clicked in Herdr go to Browsr; every other link goes where it went."""
 
+    HYPRLAND = ("[Default Applications]\n"
+                "x-scheme-handler/http=omarchy-browser.desktop;google-chrome.desktop\n"
+                "x-scheme-handler/https=re.sonny.Junction.desktop\n")
+    GENERAL = ("[Default Applications]\n"
+               "text/html=chromium.desktop\n"
+               "x-scheme-handler/https=chromium.desktop\n"
+               "[Added Associations]\n"
+               "x-scheme-handler/http=firefox.desktop;\n")
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         root = Path(self.directory.name)
         (root / "state" / "browsr").mkdir(parents=True)
-        self.defaults = {kind: "chromium.desktop" for kind in bridge.LINK_TYPES}
+        self.config = root / "config"
+        self.config.mkdir()
+        (self.config / "hyprland-mimeapps.list").write_text(self.HYPRLAND)
+        (self.config / "mimeapps.list").write_text(self.GENERAL)
         self.patches = [
             patch.object(bridge, "STATE_DIR", root / "state" / "browsr"),
-            patch.dict(os.environ, {"XDG_DATA_HOME": str(root / "data")}),
+            patch.dict(os.environ, {"XDG_DATA_HOME": str(root / "data"),
+                                    "XDG_CONFIG_HOME": str(self.config),
+                                    "XDG_CURRENT_DESKTOP": "Hyprland"}),
             patch.object(bridge.shutil, "which", lambda name: f"/usr/bin/{name}"),
-            patch.object(bridge, "default_handler", lambda kind: self.defaults.get(kind)),
-            patch.object(bridge, "set_default_handler",
-                         lambda desktop, kinds: self.defaults.update({k: desktop for k in kinds})),
+            patch.object(bridge, "browser_now", lambda: "google-chrome.desktop"),
+            patch.object(bridge, "default_handler", lambda kind: "chromium.desktop"),
         ]
         for item in self.patches:
             item.start()
@@ -1435,13 +1450,17 @@ class LinkTests(unittest.TestCase):
             item.stop()
         self.directory.cleanup()
 
-    def test_switching_on_and_off_puts_the_old_browser_back(self):
+    def test_links_go_first_in_every_list_and_come_back_exactly(self):
         bridge.links_on()
-        self.assertTrue(bridge.links_taken())
-        self.assertIn("handle-link %u", bridge.links_desktop_file().read_text())
+        for name in ("hyprland-mimeapps.list", "mimeapps.list"):
+            defaults = bridge.read_defaults(self.config / name)
+            for kind in bridge.LINK_TYPES:
+                self.assertTrue(defaults[kind].startswith("powr-links.desktop;"), (name, kind))
+        self.assertIn("powr-open", bridge.links_desktop_file().read_text())
         bridge.links_on()  # a second time must not remember itself as "before"
         bridge.links_off()
-        self.assertEqual(set(self.defaults.values()), {"chromium.desktop"})
+        self.assertEqual((self.config / "hyprland-mimeapps.list").read_text(), self.HYPRLAND)
+        self.assertEqual((self.config / "mimeapps.list").read_text(), self.GENERAL)
         self.assertFalse(bridge.links_desktop_file().exists())
 
     def test_the_old_browser_survives_cleanup_of_the_state_directory(self):
@@ -1449,10 +1468,10 @@ class LinkTests(unittest.TestCase):
         self.assertNotIn(bridge.STATE_DIR, bridge.links_saved_file().parents)
 
     def decide(self, url, front=True, on=True, space="sp1", spaces=("sp1",), alive=True):
+        groups = [{"workspace_id": s, "label": s, "focused": s == space} for s in spaces]
         with patch.object(bridge, "herdr_in_front", lambda: front), \
                 patch.object(bridge, "browsr_switched_on", lambda: on), \
-                patch.object(bridge, "app_focused_space", lambda: space), \
-                patch.object(bridge, "spaces_with_a_browser", lambda known=None: set(spaces)), \
+                patch.object(bridge, "app_spaces", lambda: groups), \
                 patch.object(bridge, "bridge_alive", lambda: alive):
             return bridge.link_goes_to_browsr(url)
 
@@ -1477,6 +1496,21 @@ class LinkTests(unittest.TestCase):
             bridge.handle_link("https://example.com")
         self.assertEqual(launched, [["/usr/bin/gtk-launch", "chromium.desktop", "https://example.com"]])
 
+    def test_the_open_the_browser_key_opens_the_old_browser(self):
+        bridge.links_on()
+        launched = []
+        with patch.object(bridge.subprocess, "Popen", lambda args, **_: launched.append(args)):
+            bridge.handle_link("")
+        self.assertEqual(launched, [["/usr/bin/gtk-launch", "google-chrome.desktop"]])
+
+    def test_http_links_go_where_http_links_went(self):
+        bridge.links_on()
+        launched = []
+        with patch.object(bridge, "link_goes_to_browsr", lambda url: None), \
+                patch.object(bridge.subprocess, "Popen", lambda args, **_: launched.append(args)):
+            bridge.handle_link("http://example.com")
+        self.assertEqual(launched, [["/usr/bin/gtk-launch", "google-chrome.desktop", "http://example.com"]])
+
     def test_a_clicked_link_opens_in_front_in_browsr(self):
         asked = []
         with patch.object(bridge, "link_goes_to_browsr", lambda url: "sp1"), \
@@ -1485,6 +1519,62 @@ class LinkTests(unittest.TestCase):
                 patch.object(bridge, "show_window", lambda: True):
             bridge.handle_link("https://example.com")
         self.assertEqual(asked, [("open_tab", "sp1", {"url": "https://example.com", "focus": True})])
+
+
+class TabGroupTests(unittest.TestCase):
+    """A space with several tabs gets a group per tab, named space:tab."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.patch = patch.object(bridge, "STATE_DIR", Path(self.directory.name))
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.directory.cleanup()
+
+    @staticmethod
+    def space(tabs, active="tb1"):
+        return {"id": "sp1", "name": "api", "active": True,
+                "tabs": [{"id": t, "name": n, "active": t == active,
+                          "terminals": [{"terminal": f"term-{t}"}]} for t, n in tabs]}
+
+    def test_one_tab_is_one_group_named_after_the_space(self):
+        self.assertEqual(bridge.app_groups([self.space([("tb1", "1")])]), [
+            {"workspace_id": "sp1", "label": "api", "focused": True},
+        ])
+
+    def test_a_second_tab_splits_the_space_and_the_first_keeps_its_group(self):
+        bridge.app_groups([self.space([("tb1", "1")])])
+        groups = bridge.app_groups([self.space([("tb1", "1"), ("tb2", "review")], active="tb2")])
+        self.assertEqual(groups, [
+            {"workspace_id": "sp1", "label": "api:1", "focused": False},
+            {"workspace_id": "sp1:tb2", "label": "api:review", "focused": True},
+        ])
+
+    def test_closing_the_first_tab_never_hands_its_group_to_another(self):
+        bridge.app_groups([self.space([("tb1", "1"), ("tb2", "2")])])
+        groups = bridge.app_groups([self.space([("tb2", "2")], active="tb2")])
+        self.assertEqual(groups, [{"workspace_id": "sp1:tb2", "label": "api", "focused": True}])
+
+    def test_an_agent_finds_the_group_of_its_own_tab(self):
+        listing = [self.space([("tb1", "1"), ("tb2", "2")])]
+        with patch.object(bridge, "app_listing", lambda: listing):
+            self.assertEqual(bridge.app_key_of_terminal("term-tb1"), "sp1")
+            self.assertEqual(bridge.app_key_of_terminal("term-tb2"), "sp1:tb2")
+            self.assertIsNone(bridge.app_key_of_terminal("term-none"))
+
+    def test_a_tab_key_belongs_to_its_space(self):
+        self.assertEqual(bridge.space_of_key("sp1:tb2"), "sp1")
+        self.assertEqual(bridge.space_of_key("sp1"), "sp1")
+
+    def test_switching_tabs_is_a_change_to_follow(self):
+        view = Path(self.directory.name) / "view.json"
+        view.write_text(json.dumps({"active": "sp1", "spaces": {"sp1": "tb1"}}))
+        with patch.object(bridge, "app_view_file", lambda: view):
+            before = bridge.app_focused_where()
+            view.write_text(json.dumps({"active": "sp1", "spaces": {"sp1": "tb2"}}))
+            self.assertNotEqual(bridge.app_focused_where(), before)
 
 
 if __name__ == "__main__":

@@ -387,13 +387,8 @@ def spaces_with_a_browser(known=None):
     return {space for space in (known or ()) if space not in off}
 
 
-def app_spaces():
-    """The app's spaces, in the shape the extension is told about.
-
-    None rather than an empty list when the app will not answer: the
-    extension reads an empty list as "say nothing", which is what keeps a
-    Herdr that is down from being read as a user with no projects.
-    """
+def app_listing():
+    """The app's spaces with their tabs, or None when it will not answer."""
     herdr_app = app_cli()
     if not herdr_app:
         return None
@@ -401,22 +396,112 @@ def app_spaces():
         output = subprocess.run(
             [herdr_app, "ls"], capture_output=True, text=True, timeout=8, check=True,
         )
-        spaces = json.loads(output.stdout).get("spaces")
+        return json.loads(output.stdout).get("spaces")
     except (OSError, ValueError, subprocess.SubprocessError, json.JSONDecodeError):
         return None
+
+
+# A space with one tab has one group, named after the space. A space with
+# two or more tabs has a group per tab, named "space:tab", so switching tabs
+# switches tabs in the browser too.
+#
+# The tab that was there first keeps the space's own key — the group the
+# space had before it grew a second tab, with whatever was open in it. Every
+# other tab gets a key of its own, and keeps it when the space shrinks back
+# to one tab: only the name changes, never which tabs a group holds.
+def tab_owners_file():
+    return STATE_DIR / "tab-owners.json"
+
+
+def tab_owners(spaces):
+    """Which tab of each space owns the space's own group ("" once it is gone)."""
+    path = tab_owners_file()
+    try:
+        owners = json.loads(path.read_text())
+    except (OSError, ValueError):
+        owners = {}
+    changed = False
+    for space in spaces:
+        sid = space.get("id")
+        ids = [tab.get("id") for tab in space.get("tabs") or [] if tab.get("id")]
+        if not sid or not ids:
+            continue
+        if sid not in owners:
+            owners[sid] = ids[0]
+            changed = True
+        elif owners[sid] and owners[sid] not in ids:
+            # Its tab was closed. Handing its group to another tab would put
+            # one session's pages in front of another, so nobody gets it.
+            owners[sid] = ""
+            changed = True
+    if changed:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json(path, owners)
+    return owners
+
+
+def tab_key(space_id, tab_id, owners):
+    if not tab_id or owners.get(space_id) == tab_id:
+        return space_id
+    return f"{space_id}:{tab_id}"
+
+
+def space_of_key(key):
+    """The space a group key belongs to: the key itself, or what is before ':'."""
+    return (key or "").split(":", 1)[0] or None
+
+
+def app_groups(spaces):
+    """One entry per group the app's spaces should have, browser on or not."""
+    owners = tab_owners(spaces)
+    entries = []
+    for space in spaces:
+        sid = space.get("id")
+        if not sid:
+            continue
+        name = space.get("name") or sid
+        tabs = [tab for tab in space.get("tabs") or [] if tab.get("id")]
+        if len(tabs) <= 1:
+            entries.append({
+                "workspace_id": tab_key(sid, tabs[0]["id"] if tabs else None, owners),
+                "label": name,
+                "focused": bool(space.get("active")),
+            })
+            continue
+        for tab in tabs:
+            entries.append({
+                "workspace_id": tab_key(sid, tab["id"], owners),
+                "label": f"{name}:{tab.get('name') or tab['id']}",
+                "focused": bool(space.get("active")) and bool(tab.get("active")),
+            })
+    return entries
+
+
+def app_spaces():
+    """The app's groups, in the shape the extension is told about.
+
+    None rather than an empty list when the app will not answer: the
+    extension reads an empty list as "say nothing", which is what keeps a
+    Herdr that is down from being read as a user with no projects.
+    """
+    spaces = app_listing()
     if not spaces:
         return None
     wanted = spaces_with_a_browser(
         [space.get("id") for space in spaces if space.get("id")])
-    return [
-        {
-            "workspace_id": space["id"],
-            "label": space.get("name") or space["id"],
-            "focused": bool(space.get("active")),
-        }
-        for space in spaces
-        if space.get("id") and space["id"] in wanted
-    ]
+    return [entry for entry in app_groups(spaces)
+            if space_of_key(entry["workspace_id"]) in wanted]
+
+
+def app_key_of_terminal(terminal=None):
+    """The group key of the tab holding a terminal: its space's, or its own."""
+    terminal = terminal or os.environ.get("HC_TERMINAL_ID")
+    spaces = app_listing() if terminal else None
+    for space in spaces or []:
+        for tab in space.get("tabs") or []:
+            if any(item.get("terminal") == terminal for item in tab.get("terminals") or []):
+                return tab_key(space.get("id"), tab.get("id"), tab_owners(spaces))
+    return None
 
 
 def app_space_of_terminal(terminal=None):
@@ -453,7 +538,7 @@ def current_workspace_id():
     if from_environment:
         return from_environment
     if herdr_host() == "app":
-        return app_space_of_terminal()
+        return app_key_of_terminal()
     return None
 
 
@@ -1093,6 +1178,17 @@ def app_focused_space():
         return None
 
 
+def app_focused_where():
+    """The space in front and its tab, as one value that changes with either."""
+    try:
+        view = json.loads(app_view_file().read_text())
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    active = view.get("active")
+    tab = (view.get("spaces") or {}).get(active) if active else None
+    return f"{active}/{tab}" if tab else active
+
+
 _VIEW_STAMP = None
 
 
@@ -1106,7 +1202,9 @@ def focus_step(last):
     if stamp == _VIEW_STAMP:
         return last
     _VIEW_STAMP = stamp
-    space = app_focused_space()
+    # The tab as well as the space: a space with several tabs has a group
+    # per tab, and switching tabs has to switch groups.
+    space = app_focused_where()
     if not space or space == last:
         return last
     try:
@@ -1188,7 +1286,7 @@ def watch_health():
     if not following and not checking:
         return
     state = None
-    space = app_focused_space()
+    space = app_focused_where()
     next_health = 0.0
     while True:
         now = time.monotonic()
@@ -1526,12 +1624,13 @@ def ask_to_switch_on(workspace_id, url):
     """
     if herdr_host() != "app" or not workspace_id:
         return
-    if workspace_id in spaces_with_a_browser(all_space_ids()):
+    space = space_of_key(workspace_id)
+    if space in spaces_with_a_browser(all_space_ids()):
         return
     request = {
         "id": uuid.uuid4().hex,
-        "space": workspace_id,
-        "name": space_name(workspace_id),
+        "space": space,
+        "name": space_name(space),
         "url": url,
         "at": time.time(),
     }
@@ -1667,11 +1766,6 @@ def default_handler(kind):
     return result.stdout.strip() or None
 
 
-def set_default_handler(desktop, kinds):
-    subprocess.run(["xdg-mime", "default", desktop, *kinds],
-                   capture_output=True, text=True, timeout=5, check=True)
-
-
 def desktop_quote(arg):
     """One argument of a desktop entry's Exec line, quoted its way, not the shell's."""
     if not any(c in arg for c in ' \t"\'\\><~|&;$*?#()`'):
@@ -1680,50 +1774,140 @@ def desktop_quote(arg):
     return f'"{escaped}"'
 
 
+def handler_lists():
+    """Every list that says which program opens a link, the one read first first.
+
+    A desktop can have its own list beside the general one, and that list wins:
+    Omarchy keeps one for Hyprland that sends http links through its own
+    launcher. Changing only the general list, as xdg-mime does, changed
+    nothing there, and every http link — localhost among them — went on to the
+    old browser.
+    """
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    desktops = [d.lower() for d in (os.environ.get("XDG_CURRENT_DESKTOP") or "").split(":") if d]
+    lists = [config / f"{desktop}-mimeapps.list" for desktop in desktops]
+    return [path for path in lists if path.exists()] + [config / "mimeapps.list"]
+
+
+def read_defaults(path):
+    """The [Default Applications] entries of one list, as {type: value}."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return {}
+    found, inside = {}, False
+    for line in lines:
+        if line.startswith("["):
+            inside = line.strip() == "[Default Applications]"
+        elif inside and "=" in line:
+            kind, value = line.split("=", 1)
+            found[kind.strip()] = value.strip()
+    return found
+
+
+def write_defaults(path, changes):
+    """Set or remove (None) entries in one list's [Default Applications]."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        lines = []
+    if "[Default Applications]" not in (line.strip() for line in lines):
+        lines += ["[Default Applications]"]
+    out, inside, done = [], False, set()
+    for line in lines:
+        if line.startswith("["):
+            if inside:
+                out += [f"{k}={v}" for k, v in changes.items() if k not in done and v is not None]
+                done.update(changes)
+            inside = line.strip() == "[Default Applications]"
+            out.append(line)
+            continue
+        if inside and "=" in line and line.split("=", 1)[0].strip() in changes:
+            kind = line.split("=", 1)[0].strip()
+            done.add(kind)
+            if changes[kind] is not None:
+                out.append(f"{kind}={changes[kind]}")
+            continue
+        out.append(line)
+    if inside:
+        out += [f"{k}={v}" for k, v in changes.items() if k not in done and v is not None]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(out) + "\n")
+
+
+def browser_now():
+    """The browser links go to today, as a desktop entry, before the pack takes them."""
+    if shutil.which("omarchy-cmd-default-browser"):
+        try:
+            result = subprocess.run(["omarchy-cmd-default-browser"],
+                                    capture_output=True, text=True, timeout=5)
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return default_handler(LINK_TYPES[-1])
+
+
 def links_taken():
     return default_handler(LINK_TYPES[-1]) == LINKS_DESKTOP
 
 
 def links_on():
-    """Make the pack the system's handler for web links, remembering the old one."""
-    if not shutil.which("xdg-mime"):
-        raise RuntimeError("xdg-mime is not installed; links cannot be routed")
+    """Make the pack the first handler for web links, remembering what was there."""
     path = links_desktop_file()
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Its own launcher as the command, not python: a desktop's "open the
+    # browser" key reads only the first word of it and runs that with no link.
     path.write_text(
         "[Desktop Entry]\n"
         "Type=Application\n"
         "Name=Powr Pack links\n"
         "Comment=Links clicked in Herdr open in Browsr; others in your browser\n"
-        f"Exec={desktop_quote(sys.executable)} {desktop_quote(str(ROOT / 'bridge.py'))} --app handle-link %u\n"
+        f"Exec={desktop_quote(str(ROOT / 'powr-open'))} %u\n"
         "MimeType=x-scheme-handler/http;x-scheme-handler/https;\n"
         "NoDisplay=true\n"
     )
-    if links_taken():
-        return
-    before = {kind: default_handler(kind) for kind in LINK_TYPES}
     saved = links_saved_file()
+    if saved.exists():
+        return
+    # Per kind, as each went before: on Omarchy http goes through its own
+    # launcher to one browser while https can name another. Omarchy's router
+    # is never kept as an answer: it would ask the lists again, and find us.
+    browser = browser_now()
+    https = default_handler(LINK_TYPES[-1])
+    before = {
+        "browser": browser,
+        "browsers": {
+            LINK_TYPES[0]: browser,
+            LINK_TYPES[-1]: https if https and https not in (LINKS_DESKTOP, "omarchy-browser.desktop") else browser,
+        },
+        "lists": {},
+    }
+    for lst in handler_lists():
+        current = read_defaults(lst)
+        before["lists"][str(lst)] = {kind: current.get(kind) for kind in LINK_TYPES}
     saved.parent.mkdir(parents=True, exist_ok=True)
     atomic_json(saved, before)
-    set_default_handler(LINKS_DESKTOP, LINK_TYPES)
+    for lst, kinds in before["lists"].items():
+        write_defaults(Path(lst), {
+            kind: ";".join([LINKS_DESKTOP] + [e for e in (value or "").split(";") if e and e != LINKS_DESKTOP]) + ";"
+            for kind, value in kinds.items()
+        })
 
 
 def links_off():
-    """Give web links back to the browser that had them before."""
+    """Put every list back exactly as it was before the pack took links."""
     saved = links_saved_file()
     try:
         before = json.loads(saved.read_text())
     except (OSError, ValueError):
         before = {}
-    for kind in LINK_TYPES:
-        if default_handler(kind) != LINKS_DESKTOP:
-            continue
-        previous = before.get(kind)
-        if not previous or previous == LINKS_DESKTOP:
-            raise RuntimeError(
-                "Do not know which browser had links before; set it with "
-                f"xdg-mime default <browser>.desktop {kind}")
-        set_default_handler(previous, [kind])
+    for lst, kinds in (before.get("lists") or {}).items():
+        write_defaults(Path(lst), kinds)
+    if "lists" not in before and any(kind in before for kind in LINK_TYPES):
+        # Written by the first version, which changed only the general list.
+        config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        write_defaults(config / "mimeapps.list", {kind: before.get(kind) for kind in LINK_TYPES})
     saved.unlink(missing_ok=True)
     links_desktop_file().unlink(missing_ok=True)
 
@@ -1757,30 +1941,32 @@ def link_goes_to_browsr(url):
         return None
     if not herdr_in_front() or not browsr_switched_on():
         return None
-    space = app_focused_space()
-    if not space or space not in spaces_with_a_browser([space]):
-        return None
     if not bridge_alive():
         return None
-    return space
+    # The group of the tab in front: the space's, or its own when the space
+    # has several. Spaces without a browser are not in the list at all.
+    focused = next((entry for entry in app_spaces() or [] if entry.get("focused")), None)
+    return focused["workspace_id"] if focused else None
 
 
 def open_elsewhere(url):
-    """Hand a link to the browser that was the default before the pack."""
+    """Hand a link to the browser that had links before the pack."""
     try:
         before = json.loads(links_saved_file().read_text())
     except (OSError, ValueError):
         before = {}
-    kind = "x-scheme-handler/http" if url.lower().startswith("http:") else LINK_TYPES[-1]
-    desktop = before.get(kind) or before.get(LINK_TYPES[-1])
+    kind = LINK_TYPES[-1] if url.lower().startswith("https:") else LINK_TYPES[0]
+    desktop = (before.get("browsers") or {}).get(kind) if url else None
+    desktop = desktop or before.get("browser")
     if not desktop or desktop == LINKS_DESKTOP:
         raise RuntimeError("No browser to hand the link to; switch Herdr links off in the Powr panel")
+    args = [desktop] + ([url] if url else [])
     launcher = shutil.which("gtk-launch")
     if launcher:
-        subprocess.Popen([launcher, desktop, url], start_new_session=True,
+        subprocess.Popen([launcher, *args], start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
-        subprocess.Popen(["gio", "launch", desktop_path(desktop), url], start_new_session=True,
+        subprocess.Popen(["gio", "launch", desktop_path(desktop), *args[1:]], start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -1795,8 +1981,11 @@ def desktop_path(desktop):
 
 
 def handle_link(url):
-    """What runs when a web link is opened anywhere on the system."""
-    space = link_goes_to_browsr(url)
+    """What runs when a web link is opened anywhere on the system.
+
+    No link at all is a desktop's "open the browser" key: the old browser.
+    """
+    space = link_goes_to_browsr(url) if url else None
     if space:
         try:
             ask_extension("open_tab", space, "Chromium did not open the link",

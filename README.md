@@ -67,7 +67,8 @@ Open the panel with the **Powr Pack** button at the bottom of the sidebar or
 
 ### Browsr
 
-One tab group per space, named after it. The space you are in is open; the
+One tab group per space, named after it. A space with two or more tabs gets a
+group per tab, named `space:tab`, so switching tabs switches groups too. The space you are in is open; the
 others are folded away and unfold when you switch to them. A new space gets a
 group, a renamed one is renamed, a closed one takes its group with it.
 
@@ -85,7 +86,7 @@ In the panel:
 | **New spaces** | Turn the browser on for every new space and worktree. |
 | **Agent asks** | What happens when an agent needs a browser in a space that has none: ask you, turn it on, or refuse. |
 | **Fold other groups** | Only the current space's tabs stay open. |
-| **Herdr links** | Links you click in Herdr open in Browsr, in the current space's group, and the browser comes to the front. Links from other programs, and from spaces without a browser, still go to your usual browser. |
+| **Herdr links** | Links you click in Herdr open in Browsr, in the current space's group, and the browser comes to the front. Links from other programs, and from spaces without a browser, still go to your usual browser. It puts itself first in every list of link handlers (a desktop's own list included, such as Omarchy's for Hyprland) and puts each back exactly as it was when switched off. |
 
 Under the buttons, one line says what is wrong, if anything, and which button
 fixes it.
