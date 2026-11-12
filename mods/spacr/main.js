@@ -26,6 +26,25 @@ const MARK = {
 };
 const HUES = Object.keys(MARK);
 
+// Everything the colour menu offers: Herdr's six by name, the rest as plain
+// #rrggbb, which Herdr stores and paints the same way in every panel. Laid
+// out round the colour wheel, nine dots to a row with "none" first, so a
+// colour is found by where it sits rather than by reading. The added ones
+// keep the six's weight, dark enough for a white letter on top.
+const PALETTE = [
+	"#d9534f", "ansi3", "#d9922e", "#c4a42c", "#7fae3a", "ansi2", "ansi6", "#2aa5c9",
+	"ansi4", "#3f62b8", "#6366e0", "ansi5", "#b25bd6", "ansi1", "#a0714a", "#7d8796", "#545b68",
+];
+const SWATCHES_PER_ROW = 9;
+// The colour menu's height, px: its rows of dots and the space between them.
+const SWATCH_ROWS = Math.ceil((PALETTE.length + 1) / SWATCHES_PER_ROW);
+const SWATCH_HEIGHT = 8 + SWATCH_ROWS * 20 + (SWATCH_ROWS - 1) * 6 + 8;
+
+/** What a stored colour looks like: one of Herdr's names, or a #rrggbb. */
+function paint(color) {
+	return MARK[color] ?? color;
+}
+
 // Our own folders, kept apart from the ones Herdr's list uses. Seeded from
 // those once, so the folders you already have are here on the first run, and
 // never written back: nothing we do can damage the list you can switch to.
@@ -458,7 +477,7 @@ export default class PowrSpaces extends View {
 		if (from) return this.colorOf(from, null);
 		const stored = shared(HERDR_COLORS);
 		const named = stored && typeof stored === "object" ? stored[space.id] : null;
-		return MARK[named] ?? MARK[hue(space.id)];
+		return named ? paint(named) : MARK[hue(space.id)];
 	}
 
 	// ---- folders ------------------------------------------------------
@@ -771,7 +790,7 @@ export default class PowrSpaces extends View {
 	}
 
 	folderHead(t, folder, inside) {
-		const tint = folder.color ? (MARK[folder.color] ?? folder.color) : t.dim;
+		const tint = folder.color ? paint(folder.color) : t.dim;
 		const landing = this.over && this.over.kind === "folder" && this.over.id === folder.id;
 		const head = h_flex()
 			.id(`powr-folder-${folder.id}`)
@@ -800,7 +819,7 @@ export default class PowrSpaces extends View {
 				const rows = Math.ceil(ICONS.length / GLYPHS_PER_ROW);
 				openOverlay({
 					mod: "spacr", kind: "popup", width: 264,
-					height: 30 + 36 + 36 + Math.min(rows * 29, GRID_HEIGHT) + 10 + 36,
+					height: 30 + 36 + SWATCH_HEIGHT + Math.min(rows * 29, GRID_HEIGHT) + 10 + 36,
 					props: { role: "folder", id: folder.id },
 				});
 			})
@@ -861,7 +880,7 @@ export default class PowrSpaces extends View {
 	openLook(id, from) {
 		openOverlay({
 			mod: "spacr", kind: "popup", width: 264,
-			height: 30 + (from ? 26 : 36) + 36 + GRID_HEIGHT + 14,
+			height: 30 + (from ? 26 : SWATCH_HEIGHT) + 36 + GRID_HEIGHT + 14,
 			props: { role: "look", id, from },
 		});
 	}
@@ -885,20 +904,20 @@ export default class PowrSpaces extends View {
 		return panel;
 	}
 
-	/** Seven dots: the six Herdr paints with, and no colour at all. */
+	/** The palette as dots, nine to a row, after one for no colour at all. */
 	swatches(t, current, pick) {
 		const swatch = (color) =>
 			div()
-				.id(`powr-swatch-${current.key}-${color ?? "none"}`)
+				.id(`powr-swatch-${current.key}-${color ? color.replace("#", "") : "none"}`)
 				.size(20).flex_none().rounded(10)
 				.cursor_pointer()
-				.bg(color ? MARK[color] : t.dim)
+				.bg(color ? paint(color) : t.dim)
 				.border_2()
 				.border_color(current.color === color ? t.foreground : t.popover)
 				.hover((s) => s.border_color(t.muted ?? t.dim))
 				.on_click((_event, cx) => pick(color, cx));
-		return h_flex().gap(6).items_center().px(8).py(4)
-			.children([null, ...HUES].map(swatch));
+		return h_flex().flex_wrap().gap(6).items_center().px(8).py(4)
+			.children([null, ...PALETTE].map(swatch));
 	}
 
 	/** The glyphs, as a wrapped grid. `plain` is the one that means none. */
@@ -1084,7 +1103,7 @@ export default class PowrSpaces extends View {
 			// colour, its own row included, so the whole thing reads as one
 			// place rather than as more of the list. Faint, because the rows
 			// on it carry their own colours too.
-			const tint = folder.color ? (MARK[folder.color] ?? folder.color) : t.foreground;
+			const tint = folder.color ? paint(folder.color) : t.foreground;
 			const card = v_flex().gap(1).rounded(6)
 				.when(/^#[0-9a-f]{6}$/i.test(tint) && this.wash() !== null, (el) => el.bg(`${tint}${this.wash()}`))
 				.child(this.folderHead(t, folder, inside));
