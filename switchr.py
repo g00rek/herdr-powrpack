@@ -15,6 +15,7 @@ import contextlib
 import fcntl
 import http.client
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -761,6 +762,289 @@ def run(kind, name, args):
         raise SystemExit(f"switchr: cannot start {argv[0]}: {error}")
 
 
+# ------------------------------------------------------- terminals and moves
+
+# Quit command typed into an idle agent. Verified live 2026-11-13 through
+# `hc send` into throwaway terminals: Claude Code 2.1.323 exits on `/exit`;
+# codex-cli 0.168.0 exits on `/quit` (and prints "codex resume <uuid>").
+# `hc send` run from inside a Herdr terminal wraps the text as
+# `<hc from="tN">…</hc>`, which the agent reads as a prompt, not a command;
+# without HC_TERMINAL_ID in the environment it types the text as is.
+QUIT = {"claude": "/exit", "codex": "/quit"}
+SHELLS = {"bash", "zsh", "fish", "sh", "dash"}
+HC_AGENTS = {"claude-code": "claude", "codex": "codex"}
+QUIT_WAIT = 20
+LAUNCH_WAIT = 30
+POLL = 0.25
+
+# Codex session of a running pid, verified live 2026-11-13 on codex-cli
+# 0.168.0: no rollout exists until the first message; afterwards the process
+# keeps `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<time>-<uuid>.jsonl` open,
+# and `/quit` printed that same uuid as the one to resume. A process with
+# subagents holds their rollouts open too; their first line (`session_meta`)
+# carries `parent_thread_id` and a `source` of {"subagent": …}, so they are
+# skipped and the newest remaining file wins.
+ROLLOUT_RE = re.compile(r"/rollout-[^/]*?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
+
+_clock = time.monotonic
+_sleep = time.sleep
+
+
+def _hc(args):
+    """The one seam for Herdr: run `hc <args> --json` and return its JSON reply."""
+    env = {k: v for k, v in os.environ.items() if k != "HC_TERMINAL_ID"}
+    try:
+        out = subprocess.run(["hc", *args, "--json"], env=env, capture_output=True,
+                             text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise SwitchrError(f"cannot reach Herdr: {error}")
+    if out.returncode != 0:
+        text = (out.stderr or out.stdout).strip()
+        try:
+            text = json.loads(text)["error"]["message"]
+        except (ValueError, KeyError, TypeError):
+            pass
+        raise SwitchrError(text or f"hc {args[0]} failed")
+    try:
+        return json.loads(out.stdout)
+    except ValueError:
+        raise SwitchrError(f"hc {args[0]} gave an unreadable reply")
+
+
+def _proc_path(pid, leaf):
+    return Path("/proc") / str(pid) / leaf
+
+
+def _program(argv0):
+    return os.path.basename(str(argv0 or ""))
+
+
+def agent_kind(foreground):
+    """claude / codex for a terminal's foreground program, else None."""
+    if not isinstance(foreground, dict):
+        return None
+    argv = foreground.get("argv") or [None]
+    for candidate in (foreground.get("name"), _program(argv[0])):
+        if candidate in AGENT.values():
+            return next(k for k, v in AGENT.items() if v == candidate)
+    return None
+
+
+def _is_shell(foreground):
+    if not isinstance(foreground, dict):
+        return True  # nothing in the foreground
+    argv = foreground.get("argv") or [None]
+    return foreground.get("name") in SHELLS or _program(argv[0]) in SHELLS
+
+
+def account_of(pid, kind=None):
+    """(kind, account name) of a running agent, from its environment; None if unreadable."""
+    try:
+        raw = _proc_path(pid, "environ").read_bytes()
+        if kind is None:
+            argv0 = _proc_path(pid, "cmdline").read_bytes().split(b"\0")[0].decode(errors="replace")
+            kind = agent_kind({"argv": [argv0]})
+    except OSError:
+        return None
+    if kind not in KINDS:
+        return None
+    prefix = ENV[kind].encode() + b"="
+    value = ""
+    for item in raw.split(b"\0"):
+        if item.startswith(prefix):
+            value = item[len(prefix):].decode(errors="replace")
+    reg = load_registry()
+    if value:
+        wanted = os.path.realpath(value)
+        for entry in reg["accounts"]:
+            if entry.get("kind") == kind and os.path.realpath(entry["home"]) == wanted:
+                return kind, entry["name"]
+    return kind, reg["main"].get(kind, "main")
+
+
+def which():
+    """Address -> kind, account, main and status of every live Claude / Codex terminal."""
+    out = {}
+    listing = _hc(["ls"])
+    terminals = listing.get("terminals", []) if isinstance(listing, dict) else listing
+    for item in terminals or []:
+        if item.get("agent") not in HC_AGENTS:
+            continue
+        address = item.get("address")
+        try:
+            info = _hc(["get", address])
+        except SwitchrError:
+            continue
+        foreground = info.get("foreground") or {}
+        kind = agent_kind(foreground) or HC_AGENTS[item["agent"]]
+        pid = foreground.get("pid")
+        found = account_of(pid, kind) if pid else None
+        if found is None:
+            continue
+        name = found[1]
+        out[address] = {"kind": kind, "account": name,
+                        "main": name == load_registry()["main"].get(kind, "main"),
+                        "state": (info.get("status") or {}).get("state")}
+    return out
+
+
+def resume_argv(kind, argv, session):
+    """Arguments to start `kind` again on `session`: the original ones minus any resume."""
+    args = list(argv[1:])
+    kept = []
+    if kind == "claude":
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg in ("--resume", "-r"):
+                if i + 1 < len(args) and not args[i + 1].startswith("-"):
+                    i += 1  # its session id
+            elif arg.startswith("--resume=") or arg in ("--continue", "-c"):
+                pass
+            else:
+                kept.append(arg)
+            i += 1
+        return [*kept, "--resume", session]
+    if args and args[0] == "resume":
+        args = args[1:]
+        if args and not args[0].startswith("-"):
+            args = args[1:]
+    kept = [a for a in args if a != "--last"]
+    return ["resume", session, *kept]
+
+
+def _claude_session_id(pid):
+    """sessionId from Claude's own record of a running pid (sessions/ is shared by all homes)."""
+    try:
+        data = json.loads((main_home("claude") / "sessions" / f"{pid}.json").read_text())
+    except (OSError, ValueError):
+        return None
+    value = data.get("sessionId") if isinstance(data, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _codex_rollout_is_main(path):
+    try:
+        with open(path) as handle:
+            first = json.loads(handle.readline())
+        payload = first.get("payload") or {}
+    except (OSError, ValueError, AttributeError):
+        return False
+    source = payload.get("source")
+    return not payload.get("parent_thread_id") and not (isinstance(source, dict) and "subagent" in source)
+
+
+def session_of(kind, pid):
+    """The conversation a running agent is in, or None when it has none worth resuming."""
+    if kind == "claude":
+        session = _claude_session_id(pid)
+        if not session:
+            return None
+        # A session nobody has written to yet has no transcript and cannot be resumed.
+        projects = main_home("claude") / "projects"
+        if not any(projects.glob(f"*/{session}.jsonl")):
+            return None
+        return session
+    try:
+        fds = list(_proc_path(pid, "fd").iterdir())
+    except OSError:
+        return None
+    found = []
+    for fd in fds:
+        try:
+            target = os.readlink(fd)
+        except OSError:
+            continue
+        match = ROLLOUT_RE.search(target)
+        if not match or not _codex_rollout_is_main(target):
+            continue
+        try:
+            found.append((os.stat(target).st_mtime, match.group(1)))
+        except OSError:
+            continue
+    return max(found)[1] if found else None
+
+
+def _result(ok, message):
+    return {"ok": ok, "message": message}
+
+
+def _wait(address, done, seconds):
+    """Poll `hc get` until done(info) is true; the matching info, or None on timeout."""
+    deadline = _clock() + seconds
+    while True:
+        info = _hc(["get", address])
+        if done(info):
+            return info
+        if _clock() >= deadline:
+            return None
+        _sleep(POLL)
+
+
+def move(address, name):
+    """Quit the idle agent in `address` and start it again on account `name`, same conversation."""
+    try:
+        info = _hc(["get", address])
+    except SwitchrError as error:
+        return _result(False, f"Could not read that terminal: {error}")
+    foreground = info.get("foreground") or {}
+    kind = agent_kind(foreground)
+    if kind is None:
+        return _result(False, "No Claude Code or Codex is running in that terminal.")
+    state = (info.get("status") or {}).get("state")
+    if state == "working":
+        return _result(False, "Still working — try when it has finished.")
+    if state == "blocked":
+        return _result(False, "It is waiting for an answer — reply to it first, then move it.")
+    if state not in ("idle", "done"):
+        return _result(False, "Cannot tell whether it is idle, so it was left alone.")
+    target = account(kind, name)
+    if target is None:
+        return _result(False, f"There is no {kind} account called {name}.")
+    if target.get("pending"):
+        return _result(False, f"{name} is not logged in yet.")
+    pid = foreground.get("pid")
+    current = account_of(pid, kind) if pid else None
+    if current is None:
+        return _result(False, "Could not tell which account it is on, so it was left alone.")
+    if current[1] == name:
+        return _result(False, f"It is already on {name}.")
+    session = session_of(kind, pid)
+    if not session:
+        return _result(False, "There is no conversation to carry over yet, so nothing was changed.")
+    line = shlex.join([str(Path(__file__).resolve()), "run", kind, name, "--",
+                       *resume_argv(kind, foreground.get("argv") or [AGENT[kind]], session)])
+    try:
+        _hc(["send", address, QUIT[kind]])
+        info = _wait(address, lambda i: _is_shell(i.get("foreground")), QUIT_WAIT)
+    except SwitchrError as error:
+        return _result(False, f"Could not quit the agent: {error}")
+    if info is None:
+        return _result(False, f"The agent did not quit within {QUIT_WAIT} seconds; nothing was changed.")
+    if info.get("state") == "finished":
+        return _result(False, "The terminal closed when the agent quit. To continue on "
+                              f"{name}, run in a new terminal: {line}")
+
+    def arrived(i):
+        fg = i.get("foreground") or {}
+        if agent_kind(fg) != kind or not fg.get("pid"):
+            return False
+        if (account_of(fg["pid"], kind) or (None, None))[1] != name:
+            return False
+        return kind != "claude" or _claude_session_id(fg["pid"]) == session
+
+    try:
+        _hc(["send", address, line])
+        info = _wait(address, arrived, LAUNCH_WAIT)
+    except SwitchrError as error:
+        return _result(False, f"The agent quit but could not be started again: {error}. "
+                              f"To continue, run: {line}")
+    if info is None:
+        return _result(False, f"Started on {name}, but could not confirm the same conversation "
+                              f"within {LAUNCH_WAIT} seconds; check the terminal.")
+    return _result(True, f"Moved to {name}, same conversation.")
+
+
 # --------------------------------------------------------------------- CLI
 
 def build_parser():
@@ -785,6 +1069,12 @@ def build_parser():
     remove_cmd.add_argument("name")
     list_cmd = sub.add_parser("list", help="list accounts with what is left on each")
     list_cmd.add_argument("--json", action="store_true")
+    which_cmd = sub.add_parser("which", help="which account each agent terminal is on")
+    which_cmd.add_argument("--json", action="store_true")
+    move_cmd = sub.add_parser("move", help="move an idle agent to another account, same conversation")
+    move_cmd.add_argument("address")
+    move_cmd.add_argument("name")
+    move_cmd.add_argument("--json", action="store_true")
     return parser
 
 
@@ -805,6 +1095,17 @@ def main(argv=None):
                 for r in rows:
                     u = r["usage"]
                     print(f"{r['kind']:7}{r['name']:24}{u['state']:11}session {u['session']}  week {u['week']}")
+        elif options.command == "which":
+            found = which()
+            if options.json:
+                print(json.dumps(found))
+            else:
+                for address, row in found.items():
+                    print(f"{address:8}{row['kind']:7}{row['account']:24}{row['state']}")
+        elif options.command == "move":
+            result = move(options.address, options.name)
+            print(json.dumps(result) if options.json else f"switchr: {result['message']}")
+            return 0 if result["ok"] else 1
         elif options.command == "add":
             entry = add(options.kind, options.name)
             print(f"switchr: created {options.kind} account {entry['name']!r}; "
