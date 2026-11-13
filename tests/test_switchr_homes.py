@@ -33,7 +33,7 @@ class HomeTests(unittest.TestCase):
             (main / "projects").mkdir()
             (main / "CLAUDE.md").write_text("x")
             (main / ".credentials.json").write_text("secret")
-            home = root / "extra"
+            home = root / "data" / "switchr" / "extra"
             switchr.prepare_home("claude", home)
             for name in ("CLAUDE.md", "skills", "projects"):
                 self.assertTrue((home / name).is_symlink(), name)
@@ -45,7 +45,7 @@ class HomeTests(unittest.TestCase):
         with sandbox() as root:
             main = root / "home" / ".codex"
             main.mkdir(parents=True)
-            home = root / "extra"
+            home = root / "data" / "switchr" / "extra"
             switchr.prepare_home("codex", home)
             (main / "plugins").mkdir()
             switchr.prepare_home("codex", home)
@@ -55,7 +55,7 @@ class HomeTests(unittest.TestCase):
         with sandbox() as root:
             main = root / "home" / ".claude"
             (main / "old").mkdir(parents=True)
-            home = root / "extra"
+            home = root / "data" / "switchr" / "extra"
             switchr.prepare_home("claude", home)
             self.assertTrue((home / "old").is_symlink())
             shutil.rmtree(main / "old")
@@ -67,8 +67,8 @@ class HomeTests(unittest.TestCase):
             (root / "home" / ".claude").mkdir()
             (root / "home" / ".claude.json").write_text(json.dumps(
                 {"mcpServers": {"a": 1}, "oauthAccount": {"x": 1}}))
-            home = root / "extra"
-            home.mkdir()
+            home = root / "data" / "switchr" / "extra"
+            home.mkdir(parents=True)
             (home / ".claude.json").write_text(json.dumps({"oauthAccount": {"y": 2}}))
             switchr.prepare_home("claude", home)
             self.assertEqual(json.loads((home / ".claude.json").read_text()),
@@ -78,8 +78,8 @@ class HomeTests(unittest.TestCase):
         with sandbox() as root:
             (root / "home" / ".claude").mkdir()
             (root / "home" / ".claude.json").write_text('{"mcpServers": {')
-            home = root / "extra"
-            home.mkdir()
+            home = root / "data" / "switchr" / "extra"
+            home.mkdir(parents=True)
             (home / ".claude.json").write_text(json.dumps({"oauthAccount": {"y": 2}}))
             switchr.prepare_home("claude", home)
             self.assertEqual(json.loads((home / ".claude.json").read_text()), {"oauthAccount": {"y": 2}})
@@ -87,7 +87,7 @@ class HomeTests(unittest.TestCase):
     def test_claude_json_main_missing_keeps_home(self):
         with sandbox() as root:
             (root / "home" / ".claude").mkdir()
-            home = root / "extra"
+            home = root / "data" / "switchr" / "extra"
             switchr.prepare_home("claude", home)
             self.assertFalse((home / ".claude.json").exists())
 
@@ -120,7 +120,7 @@ class RealCliTests(unittest.TestCase):
     def test_real_claude_reads_extra_home(self):
         with sandbox() as root:
             (root / "home" / ".claude").mkdir()
-            home = root / "extra"
+            home = root / "data" / "switchr" / "extra"
             switchr.save_registry({"main": {"claude": "main", "codex": "main"},
                                    "accounts": [{"kind": "claude", "name": "t", "home": str(home)}]})
             switchr.prepare_home("claude", home)

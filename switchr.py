@@ -10,8 +10,10 @@ settings, skills, history and projects are shared, except for the login.
 import argparse
 import json
 import os
+import base64
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -128,7 +130,24 @@ def account(kind, name):
     return None
 
 
+class SwitchrError(Exception):
+    """A refusal the person should read; the CLI prints it and exits non-zero."""
+
+
 # ------------------------------------------------------------------- homes
+
+def _guard_home(kind, home):
+    """Refuse any home that is a main folder, inside one, or outside the data directory."""
+    path = Path(home).resolve()
+    data = data_dir().resolve()
+    for other in KINDS:
+        main = main_home(other).resolve()
+        if path == main or main in path.parents:
+            raise SwitchrError(f"refusing {path}: it is (or is inside) the main {other} folder")
+    if path == data or data not in path.parents:
+        raise SwitchrError(f"refusing {path}: not inside {data}")
+    return path
+
 
 def _sync_claude_json(home):
     try:
@@ -161,6 +180,7 @@ def _sync_claude_json(home):
 def prepare_home(kind, home):
     """Make `home` an extra account folder that mirrors main except the login."""
     home = Path(home)
+    _guard_home(kind, home)
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     main = main_home(kind)
     for link in home.iterdir():
@@ -180,6 +200,256 @@ def prepare_home(kind, home):
             link.symlink_to(entry)
     if kind == "claude":
         _sync_claude_json(home)
+
+
+# ---------------------------------------------------------------- accounts
+
+def _jwt_payload(token):
+    try:
+        part = token.split(".")[1]
+        data = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    except (AttributeError, IndexError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _claude_auth_status(home):
+    """Run `claude auth status` for `home` (None = main). The one seam tests stub."""
+    env = dict(os.environ)
+    if home is None:
+        env.pop(ENV["claude"], None)
+    else:
+        env[ENV["claude"]] = str(home)
+    try:
+        out = subprocess.run(["claude", "auth", "status"], env=env, capture_output=True,
+                             text=True, timeout=60)
+        data = json.loads(out.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def identity(kind, home):
+    """{"email", "org"} of the login in `home` (None = main), or None when logged out."""
+    if kind == "claude":
+        status = _claude_auth_status(home)
+        if not status or not status.get("loggedIn"):
+            return None
+        return {"email": status.get("email"), "org": status.get("orgId")}
+    try:
+        auth = json.loads(((Path(home) if home else main_home("codex")) / "auth.json").read_text())
+        tokens = auth["tokens"]
+        email = _jwt_payload(tokens["id_token"]).get("email")
+        org = tokens.get("account_id")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    return {"email": email, "org": org} if email else None
+
+
+def running_homes():
+    """Home path -> pids of this user's processes started with an extra home."""
+    found = {}
+    uid = os.getuid()
+    wanted = {ENV[kind].encode() + b"=" for kind in KINDS}
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            if proc.stat().st_uid != uid:
+                continue
+            raw = (proc / "environ").read_bytes()
+        except OSError:
+            continue
+        for item in raw.split(b"\0"):
+            if any(item.startswith(prefix) for prefix in wanted):
+                value = item.split(b"=", 1)[1].decode(errors="replace")
+                if value:
+                    found.setdefault(value, []).append(int(proc.name))
+    return found
+
+
+def _is_running(entry):
+    home = str(entry["home"])
+    running = running_homes()
+    return bool(running.get(home) or running.get(str(Path(home).resolve())))
+
+
+def _check_name(name):
+    if not isinstance(name, str) or not NAME_RE.match(name):
+        raise SwitchrError(f"{name!r} is not a valid account name "
+                           "(lowercase letters, digits and dashes, up to 24, starting with a letter or digit)")
+
+
+def _check_kind(kind):
+    if kind not in KINDS:
+        raise SwitchrError(f"unknown kind {kind!r}; use one of {', '.join(KINDS)}")
+
+
+def _taken(reg, kind, name):
+    return name == reg["main"].get(kind, "main") or any(
+        e.get("kind") == kind and e.get("name") == name for e in reg["accounts"])
+
+
+def add(kind, name):
+    _check_kind(kind)
+    _check_name(name)
+    reg = load_registry()
+    if _taken(reg, kind, name):
+        raise SwitchrError(f"a {kind} account named {name!r} already exists")
+    home = data_dir() / kind / name
+    _guard_home(kind, home)
+    prepare_home(kind, home)
+    entry = {"kind": kind, "name": name, "home": str(home), "pending": True}
+    reg["accounts"].append(entry)
+    save_registry(reg)
+    return entry
+
+
+def _drop(kind, name):
+    """Delete an extra account's folder (links only, never what they point at) and entry."""
+    reg = load_registry()
+    for entry in reg["accounts"]:
+        if entry.get("kind") == kind and entry.get("name") == name:
+            home = _guard_home(kind, entry["home"])
+            reg["accounts"].remove(entry)
+            save_registry(reg)
+            if home.is_dir() and not home.is_symlink():
+                shutil.rmtree(home)
+            return
+
+
+def confirm(kind, name):
+    entry = account(kind, name)
+    if entry is None or entry.get("main"):
+        raise SwitchrError(f"no extra {kind} account named {name!r}")
+    pending = bool(entry.get("pending"))
+
+    def refuse(why):
+        if pending:
+            _drop(kind, name)
+        raise SwitchrError(why)
+
+    found = identity(kind, entry["home"])
+    if found is None:
+        refuse(f"{kind} account {name!r} is not logged in")
+    if found == identity(kind, None):
+        refuse(f"{found['email']} is already the main {kind} account")
+    for other in load_registry()["accounts"]:
+        if other.get("kind") == kind and other.get("name") != name and not other.get("pending") \
+                and identity(kind, other["home"]) == found:
+            refuse(f"{found['email']} is already the {kind} account {other['name']!r}")
+    reg = load_registry()
+    for item in reg["accounts"]:
+        if item.get("kind") == kind and item.get("name") == name:
+            item.pop("pending", None)
+            entry = item
+    save_registry(reg)
+    sync_programs()
+    return entry
+
+
+def rename(kind, old, new):
+    _check_kind(kind)
+    _check_name(new)
+    reg = load_registry()
+    if old == new:
+        raise SwitchrError("the new name is the same as the old one")
+    if _taken(reg, kind, new):
+        raise SwitchrError(f"a {kind} account named {new!r} already exists")
+    if old == reg["main"].get(kind, "main"):
+        reg["main"][kind] = new
+        save_registry(reg)
+        return {"kind": kind, "name": new, "home": None, "main": True}
+    for entry in reg["accounts"]:
+        if entry.get("kind") == kind and entry.get("name") == old:
+            old_home = _guard_home(kind, entry["home"])
+            new_home = data_dir() / kind / new
+            _guard_home(kind, new_home)
+            if _is_running(entry):
+                raise SwitchrError(f"{old!r} is in use by a running {kind}; close it first")
+            if new_home.exists():
+                raise SwitchrError(f"{new_home} already exists")
+            if old_home.is_dir():
+                os.rename(old_home, new_home)
+            entry["name"], entry["home"] = new, str(new_home)
+            save_registry(reg)
+            sync_programs()
+            return entry
+    raise SwitchrError(f"no {kind} account named {old!r}")
+
+
+def remove(kind, name):
+    _check_kind(kind)
+    entry = account(kind, name)
+    if entry is None:
+        raise SwitchrError(f"no {kind} account named {name!r}")
+    if entry.get("main"):
+        raise SwitchrError("the main account cannot be removed")
+    _guard_home(kind, entry["home"])
+    if _is_running(entry):
+        raise SwitchrError(f"{name!r} is in use by a running {kind}; close it first")
+    _drop(kind, name)
+    sync_programs()
+
+
+def _programs_path():
+    base = os.environ.get("HERDR_APP_HOME")
+    return (Path(base) if base else Path.home() / ".config" / "herdr-app") / "programs.json"
+
+
+OWNED_KEY = re.compile(r"^switchr-(?:%s)-" % "|".join(KINDS))
+
+
+def sync_programs():
+    """Make the new-agent menu list every confirmed extra account, touching nothing else."""
+    path = _programs_path()
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        data = {}
+    except (OSError, ValueError) as error:
+        raise SwitchrError(f"cannot read {path}: {error}")
+    if not isinstance(data, dict):
+        raise SwitchrError(f"{path} is not a JSON object")
+    table = data.get("programs")
+    table = table if isinstance(table, dict) else {}
+    table = {k: v for k, v in table.items() if not OWNED_KEY.match(k)}
+    script = str(Path(__file__).resolve())
+    for entry in load_registry()["accounts"]:
+        if entry.get("pending"):
+            continue
+        kind, name = entry["kind"], entry["name"]
+        table[f"switchr-{kind}-{name}"] = {
+            "name": f"{kind.capitalize()} \u00b7 {name}", "run": [script, "run", kind, name]}
+    data["programs"] = table
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".programs-")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        with_suppress_unlink(tmp)
+        raise
+
+
+def login(kind, name):
+    """Add `name` if new, run the agent's own login in its home, then confirm."""
+    _check_kind(kind)
+    entry = account(kind, name)
+    if entry is not None and entry.get("main"):
+        raise SwitchrError("the main account is logged in through the agent itself, not Switchr")
+    if entry is None:
+        entry = add(kind, name)
+    argv = ["claude", "auth", "login"] if kind == "claude" else ["codex", "login"]
+    env = {**os.environ, ENV[kind]: entry["home"]}
+    try:
+        subprocess.run(argv, env=env)
+    except OSError as error:
+        raise SwitchrError(f"cannot start {argv[0]}: {error}")
+    done = confirm(kind, name)
+    return f"{kind} account {name!r} is logged in as {identity(kind, done['home'])['email']}"
 
 
 # ---------------------------------------------------------------- launcher
@@ -224,6 +494,19 @@ def build_parser():
     run_cmd.add_argument("kind", choices=KINDS)
     run_cmd.add_argument("name")
     run_cmd.add_argument("args", nargs=argparse.REMAINDER)
+    add_cmd = sub.add_parser("add", help="create an account folder (not yet logged in)")
+    add_cmd.add_argument("kind", choices=KINDS)
+    add_cmd.add_argument("name")
+    login_cmd = sub.add_parser("login", help="add if needed, log in, then confirm")
+    login_cmd.add_argument("kind", choices=KINDS)
+    login_cmd.add_argument("name")
+    rename_cmd = sub.add_parser("rename", help="rename an account (main too)")
+    rename_cmd.add_argument("kind", choices=KINDS)
+    rename_cmd.add_argument("old")
+    rename_cmd.add_argument("new")
+    remove_cmd = sub.add_parser("remove", help="delete an extra account")
+    remove_cmd.add_argument("kind", choices=KINDS)
+    remove_cmd.add_argument("name")
     return parser
 
 
@@ -234,6 +517,22 @@ def main(argv=None):
         if args and args[0] == "--":
             args = args[1:]
         run(options.kind, options.name, args)
+        return
+    try:
+        if options.command == "add":
+            entry = add(options.kind, options.name)
+            print(f"switchr: created {options.kind} account {entry['name']!r}; "
+                  f"log in with: switchr login {options.kind} {entry['name']}")
+        elif options.command == "login":
+            print("switchr:", login(options.kind, options.name))
+        elif options.command == "rename":
+            rename(options.kind, options.old, options.new)
+            print(f"switchr: {options.kind} account {options.old!r} is now {options.new!r}")
+        elif options.command == "remove":
+            remove(options.kind, options.name)
+            print(f"switchr: removed {options.kind} account {options.name!r}")
+    except SwitchrError as error:
+        return f"switchr: {error}"
 
 
 if __name__ == "__main__":
