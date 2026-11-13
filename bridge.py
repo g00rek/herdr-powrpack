@@ -1309,7 +1309,9 @@ def watch_health():
             except Exception as error:
                 print(f"Browsr health watch failed: {error}", file=sys.stderr)
             try:
-                crashes = crash_step(crashes, time.time())
+                wall = time.time()
+                crashes = crash_step(
+                    crashes, wall, unwell_wall_time(state, now, wall))
             except Exception as error:
                 print(f"Browsr crash log failed: {error}", file=sys.stderr)
         if following:
@@ -1383,6 +1385,9 @@ EVIDENCE_WAIT_SECONDS = 300
 DUMP_LOOKBACK_SECONDS = 600
 SYSTEM_LOG_TIMEOUT = 3
 NO_TRACE = "closed or ended without a trace"
+NO_TRACE_LOW_MEMORY = "ended without a trace while memory was short"
+MEMORY_SHORT_PRESSURE = 10.0  # `full` avg60, percent of time everything stalled
+MEMORY_SHORT_FREE = 0.05  # MemAvailable as a share of MemTotal
 COREDUMP_MESSAGE_ID = "fc2e22bc6ee647b6b90729ab34a250b1"
 
 
@@ -1569,16 +1574,76 @@ def stopped_on_purpose(pid, now):
     return pid in pids and 0 <= now - at <= DELIBERATE_SECONDS
 
 
+def memory_snapshot(meminfo=Path("/proc/meminfo"),
+                    pressure=Path("/proc/pressure/memory")):
+    """What the machine's memory looked like right now; absent fields stay out.
+
+    This is the seam tests stub: a fall that leaves no kernel kill and no core
+    dump is often the machine running out of room, and this is the evidence.
+    """
+    snapshot = {}
+    try:
+        kb = {}
+        for line in meminfo.read_text().splitlines():
+            name, _, rest = line.partition(":")
+            parts = rest.split()
+            if parts and parts[0].isdigit():
+                kb[name] = int(parts[0])
+        if "MemTotal" in kb:
+            snapshot["mem_total_mb"] = kb["MemTotal"] // 1024
+        if "MemAvailable" in kb:
+            snapshot["mem_available_mb"] = kb["MemAvailable"] // 1024
+        if "SwapTotal" in kb and "SwapFree" in kb:
+            snapshot["swap_used_mb"] = (kb["SwapTotal"] - kb["SwapFree"]) // 1024
+    except OSError:
+        pass
+    try:
+        for line in pressure.read_text().splitlines():
+            kind, _, rest = line.partition(" ")
+            for field in rest.split():
+                key, _, value = field.partition("=")
+                if kind in ("some", "full") and key == "avg60":
+                    snapshot[f"pressure_{kind}_avg60"] = float(value)
+    except (OSError, ValueError):
+        pass
+    return snapshot
+
+
+def memory_was_short(memory):
+    if not isinstance(memory, dict):
+        return False
+
+    def number(key):
+        value = memory.get(key)
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    pressure = number("pressure_full_avg60")
+    if pressure is not None and pressure >= MEMORY_SHORT_PRESSURE:
+        return True
+    total, available = number("mem_total_mb"), number("mem_available_mb")
+    return bool(total) and available is not None and available < total * MEMORY_SHORT_FREE
+
+
+def unwell_wall_time(health, monotonic_now, wall_now):
+    """When the browser stopped answering, on the wall clock (or None)."""
+    since = (health or {}).get("unwell_since")
+    if since is None:
+        return None
+    return wall_now - (monotonic_now - since)
+
+
 def wall_time(now):
     return datetime.datetime.fromtimestamp(now).astimezone().isoformat(timespec="seconds")
 
 
-def crash_step(state, now):
+def crash_step(state, now, unwell_at=None):
     """Notice the browser going away, or a tab of it crashing, and log why.
 
     `now` is wall-clock time. `state` remembers the browser pid last seen,
     entries still waiting for the system to record why, and the dumps
-    already logged.
+    already logged. `unwell_at` is the wall-clock moment the still-running
+    browser stopped answering, if it has; it is remembered per poll because by
+    the time the browser is gone the health watch has already forgotten it.
     """
     state = dict(state or {})
     seen = state.get("seen_dumps")
@@ -1602,10 +1667,16 @@ def crash_step(state, now):
         # Relaunched before this poll: that launch moved the log aside.
         previous = STATE_DIR / "chromium.log" if current is None else newest_old_log()
         tail = log_tail(previous) if previous else []
+        memory = memory_snapshot()
+        short = memory_was_short(memory)
         entry = {
             "id": uuid.uuid4().hex, "at": wall_time(now), "pid": last,
-            "kind": "browser", "how": how or NO_TRACE, "log": tail,
+            "kind": "browser", "log": tail, "memory": memory,
+            "how": how or (NO_TRACE_LOW_MEMORY if short else NO_TRACE),
         }
+        hung_from = state.get("unwell_at")
+        if hung_from is not None and 0 <= now - hung_from:
+            entry["unanswered_seconds"] = int(now - hung_from)
         write_crash(entry)
         if how is None:
             pending.append({"id": entry["id"], "pid": last, "since": since,
@@ -1621,8 +1692,15 @@ def crash_step(state, now):
             "log": log_tail(STATE_DIR / "chromium.log"),
         })
 
+    if current != last:
+        state["pid_since"] = now
+    # The health watch does not know about pids: after a relaunch it can still
+    # report the old outage. One that began before this pid appeared is not its.
+    if unwell_at is not None and unwell_at < (state.get("pid_since") or now):
+        unwell_at = None
     state.update(pid=current, seen_at=now if current else None,
-                 pending=pending, seen_dumps=seen)
+                 pending=pending, seen_dumps=seen,
+                 unwell_at=unwell_at if current else None)
     return state
 
 
@@ -1633,13 +1711,24 @@ def entry_time(entry):
         return None
 
 
+def crash_sentence(entry):
+    """One plain line: how it ended, plus how long before it had stopped answering."""
+    how = entry.get("how", NO_TRACE)
+    seconds = entry.get("unanswered_seconds")
+    if isinstance(seconds, (int, float)) and seconds >= 0:
+        wait = f"{round(seconds / 60)} min" if seconds >= 90 else (
+            "1 min" if seconds >= 60 else f"{int(seconds)} s")
+        how += f" — stopped answering {wait} before"
+    return how
+
+
 def print_crashes():
     shown = [e for e in read_crashes() if entry_time(e)][-10:]
     if not shown:
         print("No crashes recorded.")
     for entry in shown:
         when = entry_time(entry)
-        print(f"{when.day} {when:%b %H:%M} — {entry.get('how', NO_TRACE)}")
+        print(f"{when.day} {when:%b %H:%M} — {crash_sentence(entry)}")
     print()
     print(f"Old browser logs: {old_logs_dir()}")
     print(f"Crash log: {crash_log_file()}")
