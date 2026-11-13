@@ -22,7 +22,7 @@ class PatchTests(unittest.TestCase):
         self.assertGreater(out.index(BADGE), machine)
         self.assertEqual(out.count(MENU), 1)
         self.assertLess(out.index(".on_hover("), out.index(MENU))
-        self.assertLess(out.index(MENU), out.index(CLICK))
+        self.assertEqual(out.index(CLICK, out.index(MENU)), out.index(MENU) + len(MENU) + 9)
 
     def test_patch_is_idempotent(self):
         once = agents_patch.patch(FIXTURE)
