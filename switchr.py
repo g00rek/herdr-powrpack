@@ -11,11 +11,17 @@ import argparse
 import json
 import os
 import base64
+import contextlib
+import fcntl
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 # ---------------------------------------------------------------- constants
@@ -452,6 +458,270 @@ def login(kind, name):
     return f"{kind} account {name!r} is logged in as {identity(kind, done['home'])['email']}"
 
 
+# ------------------------------------------------------------------- limits
+
+# Verified live 2026-11-13 (usage); renewal taken from the MIT-licensed
+# rcosteira79/herdr-account-switch switcher.py and NOT yet verified live.
+CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+CLAUDE_RENEW_URL = "https://platform.claude.com/v1/oauth/token"
+CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+CODEX_RENEW_URL = "https://auth.openai.com/oauth/token"
+CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+CACHE_SECONDS = 120
+RENEW_WITHIN = 300
+LOCK_WAIT = 15
+
+
+def _http(request):
+    """The one seam for the network: returns the decoded JSON of a reply."""
+    with urllib.request.urlopen(request, timeout=15) as reply:
+        return json.loads(reply.read().decode())
+
+
+def _cred_path(kind, entry):
+    base = main_home(kind) if entry.get("main") else Path(entry["home"])
+    return base / (".credentials.json" if kind == "claude" else "auth.json")
+
+
+def _lock_path(kind, entry):
+    if entry.get("main"):
+        return data_dir() / f"main-{kind}.lock"
+    return Path(entry["home"]) / ".switchr.lock"
+
+
+@contextlib.contextmanager
+def account_lock(kind, entry, wait=LOCK_WAIT):
+    """Hold the account's lock; blocks up to `wait` seconds, then refuses."""
+    path = _lock_path(kind, entry)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a")
+    try:
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise SwitchrError(f"{kind} account {entry['name']!r} is busy (lock held)")
+                time.sleep(0.1)
+        yield
+    finally:
+        handle.close()  # closing releases the flock
+
+
+def main_agent_running(kind):
+    """True when a claude/codex process of this user runs on main (variable unset)."""
+    uid, me = os.getuid(), os.getpid()
+    var = ENV[kind].encode() + b"="
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit() or int(proc.name) == me:
+            continue
+        try:
+            if proc.stat().st_uid != uid:
+                continue
+            argv0 = (proc / "cmdline").read_bytes().split(b"\0")[0]
+            if os.path.basename(argv0.decode(errors="replace")) != AGENT[kind]:
+                continue
+            env = (proc / "environ").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if not any(item.startswith(var) and len(item) > len(var) for item in env):
+            return True
+    return False
+
+
+def _agent_running(kind, entry):
+    if entry.get("main"):
+        return main_agent_running(kind)
+    return _is_running(entry)
+
+
+def _read_credentials(kind, entry):
+    """(raw file dict, access token, refresh token, expiry in seconds, account id) or None."""
+    try:
+        raw = json.loads(_cred_path(kind, entry).read_text())
+        if kind == "claude":
+            oauth = raw["claudeAiOauth"]
+            return (raw, oauth["accessToken"], oauth.get("refreshToken"),
+                    float(oauth["expiresAt"]) / 1000, None)
+        tokens = raw["tokens"]
+        access = tokens["access_token"]
+        exp = _jwt_payload(access).get("exp")
+        return raw, access, tokens.get("refresh_token"), float(exp) if exp else None, tokens.get("account_id")
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _write_credentials(path, raw):
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".cred-")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(raw, handle, indent=2)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        with_suppress_unlink(tmp)
+        raise
+
+
+def _post_json(url, body, headers):
+    request = urllib.request.Request(
+        url, data=json.dumps(body).encode(), method="POST",
+        headers={"Content-Type": "application/json", **headers})
+    return _http(request)
+
+
+def _renew(kind, entry, creds):
+    """Exchange the refresh token for a new pair and store it. True on success."""
+    raw, _access, refresh, _exp, _account_id = creds
+    if not refresh:
+        return False
+    try:
+        if kind == "claude":
+            scopes = raw["claudeAiOauth"].get("scopes") or []
+            reply = _post_json(CLAUDE_RENEW_URL, {
+                "grant_type": "refresh_token", "refresh_token": refresh,
+                "client_id": CLAUDE_CLIENT_ID, "scope": " ".join(scopes)},
+                {"User-Agent": "axios/1.15.2", "Accept": "application/json, text/plain, */*"})
+            oauth = raw["claudeAiOauth"]
+            oauth["accessToken"] = reply["access_token"]
+            oauth["refreshToken"] = reply.get("refresh_token", refresh)
+            oauth["expiresAt"] = int((time.time() + float(reply["expires_in"])) * 1000)
+        else:
+            reply = _post_json(CODEX_RENEW_URL, {
+                "client_id": CODEX_CLIENT_ID, "grant_type": "refresh_token",
+                "refresh_token": refresh, "scope": "openid profile email"},
+                {"Accept": "application/json"})
+            tokens = raw["tokens"]
+            tokens["access_token"] = reply["access_token"]
+            tokens["refresh_token"] = reply.get("refresh_token", refresh)
+            if reply.get("id_token"):
+                tokens["id_token"] = reply["id_token"]
+            raw["last_refresh"] = datetime.now(timezone.utc).isoformat()
+    except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError):
+        return False
+    _write_credentials(_cred_path(kind, entry), raw)
+    return True
+
+
+def _cache_path():
+    base = os.environ.get("XDG_CACHE_HOME")
+    return (Path(base) if base else Path.home() / ".cache") / "switchr" / "usage.json"
+
+
+def _cache_load():
+    try:
+        data = json.loads(_cache_path().read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _cache_store(key, value):
+    data = _cache_load()
+    data[key] = {"at": time.time(), "value": value}
+    path = _cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".usage-")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(data, handle)
+        os.replace(tmp, path)
+    except BaseException:
+        with_suppress_unlink(tmp)
+        raise
+
+
+def _blank(state):
+    return {"session": None, "week": None, "resets": None, "state": state}
+
+
+def _percent(value):
+    return int(round(value)) if isinstance(value, (int, float)) else None
+
+
+def _parse_claude(reply):
+    limits = [i for i in reply.get("limits") or [] if isinstance(i, dict)]
+    session = [i for i in limits if i.get("group") == "session" and i.get("percent") is not None]
+    weekly = [i for i in limits if i.get("group") == "weekly" and i.get("percent") is not None]
+    top = max(weekly, key=lambda i: i["percent"], default=None)
+    return {"session": _percent(session[0]["percent"]) if session else None,
+            "week": _percent(top["percent"]) if top else None,
+            "resets": top.get("resets_at") if top else None, "state": "ok"}
+
+
+def _parse_codex(reply):
+    window = reply.get("rate_limit") or {}
+    primary = window.get("primary_window") or {}
+    secondary = window.get("secondary_window") or {}
+    reset = secondary.get("reset_at")
+    resets = datetime.fromtimestamp(reset, timezone.utc).isoformat() if isinstance(reset, (int, float)) else None
+    return {"session": _percent(primary.get("used_percent")),
+            "week": _percent(secondary.get("used_percent")), "resets": resets, "state": "ok"}
+
+
+def usage(kind, name, renew=True):
+    """What is left on an account: session %, week %, when the week resets, and a state."""
+    _check_kind(kind)
+    entry = account(kind, name)
+    if entry is None:
+        raise SwitchrError(f"no {kind} account named {name!r}")
+    key = f"{kind}/{name}"
+    cached = _cache_load().get(key)
+    if cached and time.time() - cached.get("at", 0) < CACHE_SECONDS:
+        return cached["value"]
+    creds = _read_credentials(kind, entry)
+    if creds is None:
+        return _blank("logged-out")
+    expiry = creds[3]
+    if expiry is not None and expiry - time.time() < RENEW_WITHIN:
+        if not renew or _agent_running(kind, entry):
+            return _blank("unknown")
+        try:
+            with account_lock(kind, entry):
+                creds = _read_credentials(kind, entry)  # another renewal may have won
+                if creds is None:
+                    return _blank("logged-out")
+                if creds[3] is not None and creds[3] - time.time() < RENEW_WITHIN:
+                    if not _renew(kind, entry, creds):
+                        return _blank("unknown")
+                    creds = _read_credentials(kind, entry)
+        except SwitchrError:
+            return _blank("unknown")
+        if creds is None:
+            return _blank("unknown")
+    _raw, access, _refresh, _exp, account_id = creds
+    try:
+        if kind == "claude":
+            reply = _http(urllib.request.Request(CLAUDE_USAGE_URL, headers={
+                "Authorization": f"Bearer {access}", "anthropic-beta": "oauth-2025-04-20"}))
+            value = _parse_claude(reply)
+        else:
+            reply = _http(urllib.request.Request(CODEX_USAGE_URL, headers={
+                "Authorization": f"Bearer {access}", "chatgpt-account-id": str(account_id),
+                "User-Agent": "codex-cli", "Accept": "application/json"}))
+            value = _parse_codex(reply)
+    except (OSError, ValueError, AttributeError, TypeError, urllib.error.URLError):
+        return cached["value"] if cached else _blank("unknown")
+    _cache_store(key, value)
+    return value
+
+
+def list_accounts():
+    """Every account, main first per kind, each with its usage."""
+    reg = load_registry()
+    out = []
+    for kind in KINDS:
+        out.append((kind, reg["main"].get(kind, "main"), True, False))
+        for entry in reg["accounts"]:
+            if entry.get("kind") == kind:
+                out.append((kind, entry["name"], False, bool(entry.get("pending"))))
+    return [{"kind": k, "name": n, "main": m, "pending": p,
+             "usage": _blank("logged-out") if p else usage(k, n)} for k, n, m, p in out]
+
+
 # ---------------------------------------------------------------- launcher
 
 def launch_argv(kind, name, args):
@@ -473,6 +743,11 @@ def run(kind, name, args):
     entry = account(kind, name)
     if not entry.get("main"):
         prepare_home(kind, Path(entry["home"]))
+    try:
+        with account_lock(kind, entry):  # wait out a renewal; released before exec
+            pass
+    except SwitchrError as error:
+        raise SystemExit(f"switchr: {error}")
     env = dict(os.environ)
     for key, value in env_changes.items():
         if value is None:
@@ -507,6 +782,8 @@ def build_parser():
     remove_cmd = sub.add_parser("remove", help="delete an extra account")
     remove_cmd.add_argument("kind", choices=KINDS)
     remove_cmd.add_argument("name")
+    list_cmd = sub.add_parser("list", help="list accounts with what is left on each")
+    list_cmd.add_argument("--json", action="store_true")
     return parser
 
 
@@ -519,7 +796,15 @@ def main(argv=None):
         run(options.kind, options.name, args)
         return
     try:
-        if options.command == "add":
+        if options.command == "list":
+            rows = list_accounts()
+            if options.json:
+                print(json.dumps(rows))
+            else:
+                for r in rows:
+                    u = r["usage"]
+                    print(f"{r['kind']:7}{r['name']:24}{u['state']:11}session {u['session']}  week {u['week']}")
+        elif options.command == "add":
             entry = add(options.kind, options.name)
             print(f"switchr: created {options.kind} account {entry['name']!r}; "
                   f"log in with: switchr login {options.kind} {entry['name']}")
