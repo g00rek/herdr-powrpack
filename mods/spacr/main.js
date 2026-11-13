@@ -772,7 +772,7 @@ export default class PowrSpaces extends View {
 		rows.forEach((child) => {
 			nest.child(
 				h_flex().items_stretch()
-					.child(v_flex().w(17).flex_none().items_start()
+					.child(v_flex().w(6).flex_none().items_start()
 						.child(div().w(1).flex_1().bg(guide)))
 					.child(div().flex_1().min_w(0).child(child))
 			);
