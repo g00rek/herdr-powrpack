@@ -15,7 +15,7 @@ COPY = "switchr-agents"
 
 IMPORT = 'import { switchrBadge, switchrMenu } from "./switchr.js";'
 MACHINE = '.when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))'
-BADGE = '.when(Boolean(switchrBadge(a)), el => el.child(div().text_size(10).text_color(t.dim).child(switchrBadge(a))))'
+BADGE = '.when(Boolean(switchrBadge(a)), el => el.child(div().flex_none().px(5).rounded(4).border_1().border_color(t.accent).text_size(10).text_color(t.accent).child(switchrBadge(a))))'
 CLICK = '.on_click(() => run("pane.focus", { pane: a.pane }))'
 MENU = '.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); switchrMenu(a); })'
 HOVER_CLICK = re.compile(r"(\.on_hover\((?:(?!\.on_hover\(|\.on_click\().)*?\)\s*)(" + re.escape(CLICK) + ")", re.S)
