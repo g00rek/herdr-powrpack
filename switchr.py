@@ -1114,7 +1114,15 @@ def move(address, name):
     if not quit_ok:
         still = info.get("foreground") or {}
         if agent_kind(still) == kind and still.get("pid") == pid:
-            return _result(False, f"The agent did not quit within {QUIT_WAIT} seconds; nothing was changed.")
+            # Not "nothing was changed": with unsent text in the input box the
+            # quit command is added to it, or sent as a message. No input-clearing
+            # key is sent first: none is verified safe in both agents (ctrl+u
+            # clears a bash line through `hc keys`, but in Claude Code it is
+            # also a scroll key and clears one line at most of a draft).
+            return _result(False, f"The agent did not quit within {QUIT_WAIT} seconds and is still "
+                                  f"running on its old account. Switchr typed {QUIT[kind]} into it, "
+                                  "which may have been added to unsent text in its input box or sent "
+                                  "as a message; check the terminal.")
         return _result(False, "The agent quit, but Switchr did not recognise the program now running "
                               f"in the terminal, so it started nothing. To continue on {name}, run: {line}")
     if info.get("state") == "finished":

@@ -224,8 +224,13 @@ class MoveTests(unittest.TestCase):
             hc = FakeHc([terminal(100, state="done")])  # never returns to the shell
             result = self.run_move(hc, {})
             self.assertFalse(result["ok"])
+            # A draft in the input box turns the quit command into a typed or
+            # sent message, so "nothing was changed" would be wrong.
             self.assertEqual(result["message"],
-                             "The agent did not quit within 20 seconds; nothing was changed.")
+                             "The agent did not quit within 20 seconds and is still running on its "
+                             "old account. Switchr typed /exit into it, which may have been added to "
+                             "unsent text in its input box or sent as a message; check the terminal.")
+            self.assertNotIn("nothing was changed", result["message"])
             self.assertEqual(hc.sends(), [["send", "t1", "/exit"]])
             self.assertGreaterEqual(self.clock.now, 20)
             self.assertLess(self.clock.now, 21)
