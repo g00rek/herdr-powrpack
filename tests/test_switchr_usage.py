@@ -43,8 +43,7 @@ class UsageTests(unittest.TestCase):
         self.herdr = tempfile.TemporaryDirectory()
         self.cache = tempfile.TemporaryDirectory()
         for p in (patch.dict(os.environ, {"HERDR_APP_HOME": self.herdr.name,
-                                          "XDG_CACHE_HOME": self.cache.name}),
-                  patch.object(switchr, "main_agent_running", return_value=False)):
+                                          "XDG_CACHE_HOME": self.cache.name}),):
             p.start()
             self.addCleanup(p.stop)
         self.addCleanup(self.herdr.cleanup)
@@ -76,15 +75,62 @@ class UsageTests(unittest.TestCase):
             self.assertEqual(op.call_args[0][0].get_header("Chatgpt-account-id"), "acc")
 
     def test_no_renew_while_agent_runs(self):
+        with sandbox():
+            entry = switchr.add("claude", "work")
+            write_claude(Path(entry["home"]), 10)
+            with patch.object(switchr, "running_homes", return_value={entry["home"]: [5]}), \
+                    patch("urllib.request.urlopen") as op:
+                got = switchr.usage("claude", "work")
+            self.assertEqual(got["state"], "unknown")
+            op.assert_not_called()
+
+    def test_agent_appearing_before_lock_blocks_renewal(self):
+        with sandbox():
+            entry = switchr.add("claude", "work")
+            write_claude(Path(entry["home"]), 10)
+            answers = iter([{}, {entry["home"]: [9]}])
+            with patch.object(switchr, "running_homes", side_effect=lambda: next(answers)), \
+                    patch("urllib.request.urlopen") as op:
+                got = switchr.usage("claude", "work")
+            self.assertEqual(got["state"], "unknown")
+            op.assert_not_called()
+
+    def test_main_is_never_renewed(self):
         with sandbox() as root:
             main = root / "home" / ".claude"
             main.mkdir()
             write_claude(main, 10)
-            with patch.object(switchr, "main_agent_running", return_value=True), \
-                    patch("urllib.request.urlopen") as op:
+            before = (main / ".credentials.json").read_bytes()
+            with patch("urllib.request.urlopen") as op:
                 got = switchr.usage("claude", "main")
             self.assertEqual(got["state"], "unknown")
             op.assert_not_called()
+            self.assertEqual((main / ".credentials.json").read_bytes(), before)
+
+    def test_reply_without_expiry_still_stored(self):
+        with sandbox():
+            entry = switchr.add("claude", "work")
+            home = Path(entry["home"])
+            write_claude(home, 10)
+
+            def fake(req, timeout=None):
+                if req.get_method() == "POST":
+                    return Reply({"access_token": "a2", "refresh_token": "r2"})
+                return Reply(CLAUDE_REPLY)
+            with patch.object(switchr, "running_homes", return_value={}), \
+                    patch("urllib.request.urlopen", side_effect=fake):
+                switchr.usage("claude", "work")
+            oauth = json.loads((home / ".credentials.json").read_text())["claudeAiOauth"]
+            self.assertEqual(oauth["refreshToken"], "r2")
+            self.assertGreater(oauth["expiresAt"], time.time() * 1000)
+
+    def test_list_survives_failing_account(self):
+        with sandbox():
+            switchr.add("claude", "work")
+            with patch.object(switchr, "usage", side_effect=RuntimeError("boom")):
+                rows = switchr.list_accounts()
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(rows[0]["usage"]["state"], "unknown")
 
     def test_renew_writes_rotated_token(self):
         with sandbox() as root:

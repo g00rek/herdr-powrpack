@@ -13,6 +13,7 @@ import os
 import base64
 import contextlib
 import fcntl
+import http.client
 import re
 import shutil
 import subprocess
@@ -485,17 +486,18 @@ def _cred_path(kind, entry):
 
 
 def _lock_path(kind, entry):
-    if entry.get("main"):
-        return data_dir() / f"main-{kind}.lock"
     return Path(entry["home"]) / ".switchr.lock"
 
 
 @contextlib.contextmanager
 def account_lock(kind, entry, wait=LOCK_WAIT):
     """Hold the account's lock; blocks up to `wait` seconds, then refuses."""
-    path = _lock_path(kind, entry)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle = open(path, "a")
+    try:
+        path = _lock_path(kind, entry)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(path, "a")
+    except OSError as error:
+        raise SwitchrError(f"cannot open the lock for {kind} account {entry['name']!r}: {error}")
     try:
         deadline = time.monotonic() + wait
         while True:
@@ -509,33 +511,6 @@ def account_lock(kind, entry, wait=LOCK_WAIT):
         yield
     finally:
         handle.close()  # closing releases the flock
-
-
-def main_agent_running(kind):
-    """True when a claude/codex process of this user runs on main (variable unset)."""
-    uid, me = os.getuid(), os.getpid()
-    var = ENV[kind].encode() + b"="
-    for proc in Path("/proc").iterdir():
-        if not proc.name.isdigit() or int(proc.name) == me:
-            continue
-        try:
-            if proc.stat().st_uid != uid:
-                continue
-            argv0 = (proc / "cmdline").read_bytes().split(b"\0")[0]
-            if os.path.basename(argv0.decode(errors="replace")) != AGENT[kind]:
-                continue
-            env = (proc / "environ").read_bytes().split(b"\0")
-        except OSError:
-            continue
-        if not any(item.startswith(var) and len(item) > len(var) for item in env):
-            return True
-    return False
-
-
-def _agent_running(kind, entry):
-    if entry.get("main"):
-        return main_agent_running(kind)
-    return _is_running(entry)
 
 
 def _read_credentials(kind, entry):
@@ -573,6 +548,14 @@ def _post_json(url, body, headers):
     return _http(request)
 
 
+def _lifetime(reply):
+    try:
+        seconds = float(reply.get("expires_in", 3600))
+    except (TypeError, ValueError):
+        return 3600.0
+    return seconds if seconds > 0 else 3600.0
+
+
 def _renew(kind, entry, creds):
     """Exchange the refresh token for a new pair and store it. True on success."""
     raw, _access, refresh, _exp, _account_id = creds
@@ -588,7 +571,7 @@ def _renew(kind, entry, creds):
             oauth = raw["claudeAiOauth"]
             oauth["accessToken"] = reply["access_token"]
             oauth["refreshToken"] = reply.get("refresh_token", refresh)
-            oauth["expiresAt"] = int((time.time() + float(reply["expires_in"])) * 1000)
+            oauth["expiresAt"] = int((time.time() + _lifetime(reply)) * 1000)
         else:
             reply = _post_json(CODEX_RENEW_URL, {
                 "client_id": CODEX_CLIENT_ID, "grant_type": "refresh_token",
@@ -600,9 +583,12 @@ def _renew(kind, entry, creds):
             if reply.get("id_token"):
                 tokens["id_token"] = reply["id_token"]
             raw["last_refresh"] = datetime.now(timezone.utc).isoformat()
-    except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError):
+    except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError, http.client.HTTPException):
         return False
-    _write_credentials(_cred_path(kind, entry), raw)
+    try:
+        _write_credentials(_cred_path(kind, entry), raw)
+    except OSError:
+        return False
     return True
 
 
@@ -677,7 +663,8 @@ def usage(kind, name, renew=True):
         return _blank("logged-out")
     expiry = creds[3]
     if expiry is not None and expiry - time.time() < RENEW_WITHIN:
-        if not renew or _agent_running(kind, entry):
+        # Switchr never rewrites the main login; extras only while no agent runs.
+        if not renew or entry.get("main") or _is_running(entry):
             return _blank("unknown")
         try:
             with account_lock(kind, entry):
@@ -685,10 +672,12 @@ def usage(kind, name, renew=True):
                 if creds is None:
                     return _blank("logged-out")
                 if creds[3] is not None and creds[3] - time.time() < RENEW_WITHIN:
+                    if _is_running(entry):  # an agent started after the first check
+                        return _blank("unknown")
                     if not _renew(kind, entry, creds):
                         return _blank("unknown")
                     creds = _read_credentials(kind, entry)
-        except SwitchrError:
+        except (SwitchrError, OSError):
             return _blank("unknown")
         if creds is None:
             return _blank("unknown")
@@ -703,9 +692,13 @@ def usage(kind, name, renew=True):
                 "Authorization": f"Bearer {access}", "chatgpt-account-id": str(account_id),
                 "User-Agent": "codex-cli", "Accept": "application/json"}))
             value = _parse_codex(reply)
-    except (OSError, ValueError, AttributeError, TypeError, urllib.error.URLError):
+    except (OSError, ValueError, AttributeError, TypeError, urllib.error.URLError,
+            http.client.HTTPException):
         return cached["value"] if cached else _blank("unknown")
-    _cache_store(key, value)
+    try:
+        _cache_store(key, value)
+    except OSError:
+        pass
     return value
 
 
@@ -718,8 +711,15 @@ def list_accounts():
         for entry in reg["accounts"]:
             if entry.get("kind") == kind:
                 out.append((kind, entry["name"], False, bool(entry.get("pending"))))
-    return [{"kind": k, "name": n, "main": m, "pending": p,
-             "usage": _blank("logged-out") if p else usage(k, n)} for k, n, m, p in out]
+    def safe(k, n, p):
+        if p:
+            return _blank("logged-out")
+        try:
+            return usage(k, n)
+        except Exception:
+            return _blank("unknown")
+    return [{"kind": k, "name": n, "main": m, "pending": p, "usage": safe(k, n, p)}
+            for k, n, m, p in out]
 
 
 # ---------------------------------------------------------------- launcher
@@ -743,11 +743,12 @@ def run(kind, name, args):
     entry = account(kind, name)
     if not entry.get("main"):
         prepare_home(kind, Path(entry["home"]))
-    try:
-        with account_lock(kind, entry):  # wait out a renewal; released before exec
-            pass
-    except SwitchrError as error:
-        raise SystemExit(f"switchr: {error}")
+    if not entry.get("main"):  # Switchr never renews main, so only extras can race
+        try:
+            with account_lock(kind, entry):  # wait out a renewal; released before exec
+                pass
+        except SwitchrError as error:
+            raise SystemExit(f"switchr: {error}")
     env = dict(os.environ)
     for key, value in env_changes.items():
         if value is None:
