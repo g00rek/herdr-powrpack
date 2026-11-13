@@ -473,6 +473,13 @@ export default class PowrSpaces extends View {
 		cx.notify();
 	}
 
+	/** The colour someone picked for a project, or null when none was. */
+	chosenColor(space) {
+		const stored = shared(HERDR_COLORS);
+		const named = stored && typeof stored === "object" ? stored[space.id] : null;
+		return named ? paint(named) : null;
+	}
+
 	colorOf(space, from) {
 		if (from) return this.colorOf(from, null);
 		const stored = shared(HERDR_COLORS);
@@ -628,7 +635,14 @@ export default class PowrSpaces extends View {
 
 	// ---- drawing ------------------------------------------------------
 
-	row(t, space, inFront, mark, from) {
+	/**
+	 * One project or branch. `folder` is the folder it sits in, or null when
+	 * it is loose. Colour belongs to the top of the tree: a folder wears its
+	 * own, a loose project the one picked for it (grey until one is), and
+	 * everything inside either is grey.
+	 */
+	row(t, space, inFront, mark, from, folder = null) {
+		const hue = !from && !folder ? this.chosenColor(space) : null;
 		const on = this.browsers()[space.id] === true;
 		const letter = (space.name || "?").trim().charAt(0).toUpperCase() || "?";
 		const icon = this.iconOf(space, from);
@@ -641,7 +655,7 @@ export default class PowrSpaces extends View {
 			.when(!from, (el) => el.items_center().px(8))
 			.when(Boolean(from), (el) => el.items_start().pl(2).pr(8))
 			.gap(8)
-			.py(4)
+			.py(2)
 			.rounded(6)
 			.cursor_pointer()
 			.when(inFront, (el) => el.bg(t.selected))
@@ -673,9 +687,8 @@ export default class PowrSpaces extends View {
 					props: { tab: "space", target: { id: space.id } },
 				});
 			})
-			// A drawing alone, no tile behind it: the folder carries the colour,
-			// so a project's mark stays grey and the one in front is the only
-			// bright one on the list.
+			// A drawing alone, no tile behind it, grey unless it is a loose
+			// project with a colour of its own (see above).
 			.child(
 				h_flex()
 					.id(`powr-tile-${space.id}`)
@@ -693,13 +706,13 @@ export default class PowrSpaces extends View {
 					// not caught at all: it selects, like anywhere on the row.
 					.on_mouse_down("right", (_event, cx) => {
 						cx.stop_propagation();
-						this.openLook(space.id, from?.name ?? null);
+						this.openLook(space.id, from?.name ?? null, Boolean(from || folder));
 					})
 					.child(icon
 						? svg(`mods/spacr/icons/${icon}.svg`).size(from ? 13 : 16)
-							.text_color(inFront ? t.foreground : t.dim)
+							.text_color(hue ?? (inFront ? t.foreground : t.dim))
 						: div().text_size(from ? 11 : 13)
-							.text_color(inFront ? t.foreground : t.dim)
+							.text_color(hue ?? (inFront ? t.foreground : t.dim))
 							.child(letter))
 			)
 			.child(
@@ -748,12 +761,14 @@ export default class PowrSpaces extends View {
 	 * this size the structure was barely there; a rule in the family's own
 	 * colour says it in one stroke.
 	 */
-	group(t, { space, kids }, here, indent) {
-		const block = v_flex().gap(1).child(this.row(t, space, space.id === here, null));
+	group(t, { space, kids }, here, indent, folder = null) {
+		const block = v_flex().gap(1).child(this.row(t, space, space.id === here, null, undefined, folder));
 		if (!kids.length) return block;
+		// The guide to its branches is in the colour of whatever stands at the
+		// top of its tree: its folder's, its own, or grey.
+		const line = folder ? folder.tint : (this.chosenColor(space) ?? t.border);
 		return block.child(this.branches(t, kids.map((kid) =>
-			this.row(t, kid, kid.id === here, null, space)), this.colorOf(space, null),
-			indent));
+			this.row(t, kid, kid.id === here, null, space, folder)), line, indent));
 	}
 
 	/**
@@ -772,7 +787,7 @@ export default class PowrSpaces extends View {
 		rows.forEach((child) => {
 			nest.child(
 				h_flex().items_stretch()
-					.child(v_flex().w(6).flex_none().items_start()
+					.child(v_flex().w(1).flex_none().items_start()
 						.child(div().w(1).flex_1().bg(guide)))
 					.child(div().flex_1().min_w(0).child(child))
 			);
@@ -867,11 +882,11 @@ export default class PowrSpaces extends View {
 	 * moved under the list to stop that — opened somewhere far from the row
 	 * it was about.
 	 */
-	openLook(id, from) {
+	openLook(id, from, grey) {
 		openOverlay({
 			mod: "spacr", kind: "popup", width: 264,
-			height: 30 + (from ? 26 : SWATCH_HEIGHT) + 36 + GRID_HEIGHT + 14,
-			props: { role: "look", id, from },
+			height: 30 + (grey ? 0 : SWATCH_HEIGHT + 4) + 32 + GRID_HEIGHT + 14,
+			props: { role: "look", id, from, grey },
 		});
 	}
 
@@ -962,17 +977,13 @@ export default class PowrSpaces extends View {
 	spaceControls(t, space) {
 		const stored = shared(HERDR_COLORS);
 		const color = (stored && typeof stored === "object" ? stored[space.id] : null) ?? null;
-		// A branch takes its project's colour, so offering it a colour of its
-		// own would be offering something that does nothing. It says where the
-		// colour comes from instead, which is the answer to the question
-		// anyone opening this was about to ask.
+		// Only the top of the tree wears a colour, so a branch or a project
+		// inside a folder is offered glyphs alone.
 		const from = props()?.from ?? null;
+		const grey = props()?.grey ?? Boolean(from);
 		return this.box(t, space.name, [
-			from
-				? div().text_size(11).text_color(t.dim).px(8).py(4)
-					.child(`colour comes from ${from}`)
-				: this.swatches(t, { key: `sp-${space.id}`, color },
-					(pick, cx) => this.paintSpace(space.id, pick, cx)),
+			...(grey ? [] : [this.swatches(t, { key: `sp-${space.id}`, color },
+				(pick, cx) => this.paintSpace(space.id, pick, cx))]),
 			h_flex().h(28).mx(4).px(6).items_center().rounded(6)
 				.border_1().border_color(t.border)
 				.child(Input.new(this.search).h_full().text_size(12).text_color(t.foreground)),
@@ -1100,7 +1111,8 @@ export default class PowrSpaces extends View {
 			if (!folder.folded && inside.length) {
 				// Its projects hang off its tile by the same rule a project's
 				// branches hang off the project, in the folder's colour.
-				card.child(this.branches(t, inside.map((node) => this.group(t, node, here, 0)),
+				card.child(this.branches(t, inside.map((node) =>
+					this.group(t, node, here, 0, { name: folder.name, tint })),
 					tint, 0).pb(2));
 			}
 			body.child(card);
