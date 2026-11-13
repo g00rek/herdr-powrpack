@@ -1,8 +1,9 @@
 import { View, div, svg } from "gpui-kit";
-import { h_flex, v_flex } from "gpui-base";
-import { exec, focused, spaces, theme, home, notify, run, props, shared, setShared,
+import { h_flex, v_flex, InputState, Input } from "gpui-base";
+import { exec, focused, spaces, theme, home, appHome, notify, run, props, shared, setShared,
 	closeOverlay, layout, openOverlay, readTextFile, writeTextFile } from "herdr";
-import { swapMod } from "./layout-swap.js";
+import { swapMod, savedSizes } from "./layout-swap.js";
+import { usageLine, withUsage, UNKNOWN } from "./switchr-accounts.js";
 
 // Powr: one button in the chrome and one panel. The panel switches the
 // modules of the pack on and off and shows a page for each.
@@ -11,6 +12,8 @@ import { swapMod } from "./layout-swap.js";
 
 // Where Browsr is checked out. Change this line if yours is elsewhere.
 const BRIDGE = `${home()}/Projects/herdr-powrpack/bridge.py`;
+// Where Switchr is checked out, next to Browsr.
+const SWITCHR = `${home()}/Projects/herdr-powrpack/switchr.py`;
 const MODULES = "powr.modules";
 const PANEL = "powr.panel";
 const SAME_PRESS = 250;
@@ -34,6 +37,19 @@ const FOLD = "browsr.fold";           // other groups fold on a switch
 const LINKS = "browsr.links";         // links clicked in Herdr open in Browsr
 const WASH = "spacr.wash";            // folder background: none|light|medium|strong
 
+// Switchr. The badge in the Agents list reads WHERE: { [address]: account }
+// for agents not on the main account, and nothing else, so an entry there is
+// always a badge. What the move menu needs besides (the kind, and whether the
+// agent is busy) is kept apart in AGENTS, the whole answer of `which`.
+// The addresses are the core's terminal IDs ("t12"); Herdr's own agents list
+// joins agents() and terminals() on the same key, so they match as they are.
+const WHERE = "switchr.where";
+const AGENTS = "switchr.agents";
+const WHICH_EVERY = 3000;
+const SWITCHR_LIST = "switchr-agents"; // the patched copy of Herdr's agents list
+const NAME_RULE = /^[a-z0-9][a-z0-9-]{0,23}$/;
+const KIND_NAMES = { claude: "Claude", codex: "Codex" };
+
 // The modules this panel switches, in the order the column lists them.
 function find(node, id) {
   if (node?.id === id) return node;
@@ -49,7 +65,29 @@ const ALL = [
 		about: "A tab group for every space, shown as you switch spaces." },
 	{ id: "spacr", name: "Spacr", icon: "mods/powr/spacr.svg",
 		about: "Your projects in folders, each with its own colour and icon." },
+	{ id: "switchr", name: "Switchr", icon: "mods/powr/switchr.svg",
+		about: "A Claude or Codex account per agent, switched without logging out." },
 ];
+
+/** Run a `list --json`: { rows } on success, { error } with a sentence when it failed. */
+async function listRows(args, timeout) {
+  try {
+    const r = await exec(SWITCHR, ["list", "--json", ...args], { timeout });
+    if (r.code !== 0) return { error: failure(r, "Switchr could not list the accounts.") };
+    const rows = JSON.parse(r.stdout);
+    return { rows: Array.isArray(rows) ? rows : [] };
+  } catch (error) {
+    return { error: String(error?.message ?? error) };
+  }
+}
+
+/** The last line a failed command printed, without the program's name. */
+function failure(result, fallback) {
+  const last = String(result?.stderr ?? "").trim().split("\n").pop() || fallback;
+  return last.replace(/^switchr:\s*/, "");
+}
+
+const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
 // Which group you are in, said in colour.
 //
@@ -112,6 +150,11 @@ export default class Powr extends View {
       cx.notify();
       return;
     }
+    if (props()?.role === "account") {
+      // Switchr's move menu, opened from a right press on an agent row.
+      this.initAccountMenu(cx);
+      return;
+    }
     this.status = null;
     this.note = "";
     this.working = null;
@@ -123,26 +166,48 @@ export default class Powr extends View {
         this.recordNewSpaces(cx);
       });
       this.recordNewSpaces(cx);
+      // Which account each agent is on, for the badges. The button is on
+      // screen all day and exists once, so it is the one that keeps it.
+      this.asking = false;
+      cx.timer.every(WHICH_EVERY, (cx) => this.publishWhere(cx));
+      this.publishWhere(cx);
     } else {
       setShared(PANEL, { open: true, changed: Date.now() });
-      cx.timer.every(STATUS_EVERY, (cx) => this.refresh(cx));
+      this.accounts = null;  // list --json, while the Switchr page is open
+      this.listing = false;
+      this.editing = null;   // { mode: "rename" | "add", kind, name }
+      this.removing = null;  // "kind/name" waiting for its second press
+      this.field = InputState.new({ placeholder: "Name" });
+      this.field.on("submit", (_event, cx) => this.commitField(cx));
+      cx.timer.every(STATUS_EVERY, (cx) => {
+        this.refresh(cx);
+        this.loadAccounts(cx);
+      });
       this.refresh(cx);
     }
   }
 
   async close() {
-    if (!this.ask && !this.isButton()) setShared(PANEL, { open: false, changed: Date.now() });
+    if (!this.ask && !this.isButton() && props()?.role !== "account") {
+      setShared(PANEL, { open: false, changed: Date.now() });
+    }
   }
 
   isButton() {
     return props()?.role === "button";
   }
 
-  /** { browsr: bool, spacr: bool }, every module on unless set off. */
+  /**
+   * { browsr: bool, spacr: bool, switchr: bool }. Every module is on unless
+   * set off, except Switchr, which is off until switched on: it needs its
+   * copy of the agents list in the layout, and only switching it on puts it
+   * there.
+   */
   modules() {
     const stored = shared(MODULES);
     const set = stored && typeof stored === "object" ? stored : {};
-    return Object.fromEntries(ALL.map((m) => [m.id, set[m.id] !== false]));
+    return Object.fromEntries(ALL.map((m) =>
+      [m.id, m.id === "switchr" ? set[m.id] === true : set[m.id] !== false]));
   }
 
   /**
@@ -271,28 +336,114 @@ export default class Powr extends View {
     if (id === "spacr") {
       // The switch only sticks when the layout followed: otherwise the
       // list stays what it was and the toggle would lie.
-      let done = false;
-      try {
-        const { tree, changed } = on
-          ? swapMod(layout(), "spaces", "spacr")
-          : swapMod(layout(), "spacr", "spaces");
-        if (changed > 0) {
-          run("layout.set", { layout: tree });
-          done = true;
+      cx.spawn(async (cx) => {
+        if (!(await this.swapLayout(on ? "spaces" : "spacr", on ? "spacr" : "spaces"))) {
+          this.cannotSwap("project list");
+          cx.notify();
+          return;
         }
-      } catch {}
-      if (!done) {
-        notify({
-          title: "Powr",
-          body: "This layout has no project list Powr can swap. Clone it first (Settings), then switch again.",
-          level: "warning",
-        });
+        setShared(MODULES, { ...this.modules(), [id]: on });
         cx.notify();
-        return;
-      }
-      setShared(MODULES, { ...this.modules(), [id]: on });
+      });
+    }
+    if (id === "switchr") {
+      cx.spawn(async (cx) => {
+        if (on) {
+          // The copy is made by the installer; without it the layout
+          // would point at a list that is not there.
+          let copy = null;
+          try { copy = await readTextFile(`${appHome()}/mods/${SWITCHR_LIST}/main.js`); } catch {}
+          if (!copy) {
+            notify({
+              title: "Powr",
+              body: "Switchr's agents list is not installed. Run install.py, then switch again.",
+              level: "warning",
+            });
+            cx.notify();
+            return;
+          }
+        }
+        if (!(await this.swapLayout(on ? "agents" : SWITCHR_LIST, on ? SWITCHR_LIST : "agents"))) {
+          this.cannotSwap("agents list");
+          cx.notify();
+          return;
+        }
+        setShared(MODULES, { ...this.modules(), [id]: on });
+        if (on) {
+          this.loadAccounts(cx);
+        } else {
+          setShared(WHERE, {});
+          setShared(AGENTS, {});
+        }
+        cx.notify();
+      });
     }
     cx.notify();
+  }
+
+  /**
+   * Point the layout's `from` block at `to`. True when something changed.
+   * layout.set drops the sizes the person dragged (the app's click file for
+   * the layout), so they are read first and put back right after.
+   */
+  async swapLayout(from, to) {
+    let sizes = [];
+    try {
+      const name = shared("layout");
+      const text = name ? await readTextFile(`${appHome()}/layouts/.state/${name}.json`) : null;
+      if (text) sizes = savedSizes(text);
+    } catch {}
+    try {
+      const { tree, changed } = swapMod(layout(), from, to);
+      if (changed > 0) {
+        run("layout.set", { layout: tree });
+        for (const { id, ...size } of sizes) {
+          try { run("layout.resize", { id, ...size }); } catch {}
+        }
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  cannotSwap(what) {
+    notify({
+      title: "Powr",
+      body: `This layout has no ${what} Powr can swap. Clone it first (Settings), then switch again.`,
+      level: "warning",
+    });
+  }
+
+  /**
+   * Ask Switchr which account each agent is on and leave it for the badges.
+   * Written only when the answer changed: the store is shared, and a write
+   * that says nothing new would wake every panel reading it. A tick is
+   * skipped while the previous question is still out.
+   */
+  publishWhere(cx) {
+    if (!this.modules().switchr || this.asking) return;
+    this.asking = true;
+    cx.spawn(async () => {
+      try {
+        const r = await exec(SWITCHR, ["which", "--json"], { timeout: 10000 });
+        if (r.code !== 0) return;
+        const found = JSON.parse(r.stdout);
+        if (!found || typeof found !== "object") return;
+        // Switched off while the question was out: switching off cleared
+        // the badges, and this late answer must not bring them back.
+        if (!this.modules().switchr) return;
+        const where = {};
+        for (const [address, row] of Object.entries(found)) {
+          if (row && row.main === false && row.account) where[address] = row.account;
+        }
+        if (!same(shared(WHERE), where)) setShared(WHERE, where);
+        if (!same(shared(AGENTS), found)) setShared(AGENTS, found);
+      } catch {
+        // The next tick tries again; a missing badge is the honest failure.
+      } finally {
+        this.asking = false;
+      }
+    });
   }
 
   /**
@@ -472,7 +623,12 @@ export default class Powr extends View {
         .text_color(picked ? t.foreground : t.dim)
         .opacity(on[m.id] ? 1 : 0.5)
         .hover((s) => s.bg(t.hover))
-        .on_click((_event, cx) => { this.page = m.id; cx.notify(); })
+        .on_click((_event, cx) => {
+          this.page = m.id;
+          this.removing = null;
+          this.loadAccounts(cx);
+          cx.notify();
+        })
         .child(h_flex().items_center().gap(8)
           .child(svg(m.icon).size(14))
           .child(m.name)));
@@ -587,8 +743,272 @@ export default class Powr extends View {
           (value) => setShared(WASH, value))));
   }
 
+  /** Switchr's accounts and what is left on each, while its page is open. */
+  loadAccounts(cx) {
+    if (this.page !== "switchr" || !this.modules().switchr || this.listing) return;
+    this.listing = true;
+    cx.spawn(async (cx) => {
+      // Both start now; the names need no network and come first, so a hung
+      // network only leaves the limits on "Checking limits…" for a while.
+      const full = listRows([], 20000);
+      const names = await listRows(["--no-usage"], 10000);
+      if (names.rows) {
+        this.accounts = withUsage(names.rows, this.accounts, null);
+        this.accountsNote = "";
+        cx.notify();
+      }
+      const limits = await full;
+      if (limits.rows && !names.rows) {
+        this.accounts = limits.rows;
+        this.accountsNote = "";
+      } else if (this.accounts) {
+        this.accounts = withUsage(this.accounts, limits.rows, UNKNOWN);
+      } else {
+        this.accountsNote = names.error;
+      }
+      this.listing = false;
+      cx.notify();
+    });
+  }
+
+  /** Put the one name field on a row: an account being renamed, or a new one. */
+  startEditing(edit, cx) {
+    this.editing = edit;
+    this.removing = null;
+    this.fieldNote = "";
+    this.field.set_value(edit.mode === "rename" ? edit.name : "");
+    this.field.focus();
+    cx.notify();
+  }
+
+  commitField(cx) {
+    const edit = this.editing;
+    if (!edit) return;
+    const typed = this.field.value().trim();
+    if (edit.mode === "rename" && typed === edit.name) {
+      this.editing = null;
+      cx.notify();
+      return;
+    }
+    if (!NAME_RULE.test(typed)) {
+      this.fieldNote = "Use small letters, digits and dashes, up to 24 characters.";
+      cx.notify();
+      return;
+    }
+    if ((this.accounts ?? []).some((a) => a.kind === edit.kind && a.name === typed)) {
+      this.fieldNote = `There is already a ${KIND_NAMES[edit.kind]} account called ${typed}.`;
+      cx.notify();
+      return;
+    }
+    this.editing = null;
+    if (edit.mode === "add") {
+      // Logging in happens in the agent's own sign-in, so it gets a tab to
+      // talk in; the panel steps aside so that tab is what you see.
+      run("tab.new", { name: `Log in: ${typed}`, argv: [SWITCHR, "login", edit.kind, typed] });
+      const overlay = props()?.overlay;
+      if (overlay) closeOverlay(overlay);
+      return;
+    }
+    this.switchrCommand(["rename", edit.kind, edit.name, typed], "Could not rename it.", cx);
+  }
+
+  /** Remove asks twice: the first press only turns the button into "Sure?". */
+  removeAccount(account, cx) {
+    const key = `${account.kind}/${account.name}`;
+    if (this.removing !== key) {
+      this.removing = key;
+      this.editing = null;
+      // Armed for a few seconds only: a "Sure?" left standing would remove
+      // on a press made much later, for another reason.
+      cx.timer.after(4000, (cx) => {
+        if (this.removing === key) {
+          this.removing = null;
+          cx.notify();
+        }
+      });
+      cx.notify();
+      return;
+    }
+    this.removing = null;
+    this.switchrCommand(["remove", account.kind, account.name], "Could not remove it.", cx);
+  }
+
+  switchrCommand(args, fallback, cx) {
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec(SWITCHR, args, { timeout: 20000 });
+        if (r.code !== 0) throw new Error(failure(r, fallback));
+      } catch (error) {
+        notify({ title: "Switchr", body: String(error?.message ?? error), level: "error" });
+      }
+      this.loadAccounts(cx);
+      cx.notify();
+    });
+  }
+
+  smallButton(t, id, label, handler) {
+    return div().id(id).flex_none().px(10).py(3).rounded(5).cursor_pointer()
+      .bg(t.surface).text_color(t.foreground)
+      .hover((s) => s.bg(t.hover))
+      .on_click((_event, cx) => handler(cx))
+      .child(label);
+  }
+
+  /** The name field, drawn the way Spacr draws its folder name. */
+  nameField(t) {
+    return v_flex().flex_1().min_w(0).gap(3)
+      .child(div().h(24).px(6).rounded(5).border_1().border_color(t.accent).cursor_text()
+        .child(Input.new(this.field).h_full().text_size(13).text_color(t.foreground)))
+      .child(div().text_size(11).text_color(this.fieldNote ? t.blocked : t.dim)
+        .child(this.fieldNote || (this.editing?.mode === "add"
+          ? "Type a name and press Enter. A tab opens for you to log in."
+          : "Type the new name and press Enter.")));
+  }
+
+  accountRow(t, account) {
+    const key = `${account.kind}/${account.name}`;
+    const renaming = this.editing?.mode === "rename" && this.editing.kind === account.kind
+      && this.editing.name === account.name;
+    const row = h_flex().items_center().gap(8).py(3);
+    if (renaming) {
+      row.child(this.nameField(t));
+    } else {
+      row.child(v_flex().flex_1().min_w(0)
+        .child(h_flex().items_center().gap(6)
+          .child(div().text_color(t.foreground).truncate().child(account.name))
+          .when(account.main === true, (el) => el.child(
+            div().text_size(11).text_color(t.dim).child("main"))))
+        .child(div().text_size(12).text_color(t.dim).child(usageLine(account))));
+    }
+    row.child(this.smallButton(t, `switchr-rename-${key}`, "Rename",
+      (cx) => this.startEditing({ mode: "rename", kind: account.kind, name: account.name }, cx)));
+    if (account.main !== true) {
+      row.child(this.smallButton(t, `switchr-remove-${key}`,
+        this.removing === key ? "Sure?" : "Remove", (cx) => this.removeAccount(account, cx)));
+    }
+    return row;
+  }
+
+  renderSwitchrPage(t) {
+    const line = (text) => div().text_size(12).text_color(t.dim).child(text);
+    const page = v_flex().gap(4)
+      .child(line("Right press on an agent in the Agents list to move it to another account."))
+      .child(line("An agent on an account other than main shows that account's name."));
+    if (this.accounts === null) {
+      return page.child(div().pt(10).text_size(12).text_color(t.dim)
+        .child(this.accountsNote || "Checking…"));
+    }
+    if (this.accountsNote) page.child(div().pt(6).text_size(12).text_color(t.blocked).child(this.accountsNote));
+    for (const kind of Object.keys(KIND_NAMES)) {
+      page.child(this.section(t, `${KIND_NAMES[kind]} accounts`));
+      for (const account of this.accounts.filter((a) => a.kind === kind)) {
+        page.child(this.accountRow(t, account));
+      }
+      if (this.editing?.mode === "add" && this.editing.kind === kind) {
+        page.child(h_flex().py(3).child(this.nameField(t)));
+      } else {
+        page.child(h_flex().py(3).child(this.smallButton(t, `switchr-add-${kind}`,
+          `Add ${KIND_NAMES[kind]} account`, (cx) => this.startEditing({ mode: "add", kind }, cx))));
+      }
+    }
+    return page;
+  }
+
+  /**
+   * The move menu. What `which` said last is on screen at once; a fresh
+   * answer, with the account names, replaces it a moment later, so "busy" is
+   * never a few seconds stale when it matters. The limits come last and are
+   * only shown: moving needs no network, so a hung one never blocks the menu.
+   */
+  initAccountMenu(cx) {
+    this.address = props()?.address ?? null;
+    const known = shared(AGENTS);
+    this.agent = known && typeof known === "object" ? known[this.address] ?? null : null;
+    this.menuAccounts = null;
+    this.menuNote = "";
+    this.moving = null;
+    cx.spawn(async (cx) => {
+      const full = listRows([], 20000);
+      try {
+        const [which, names] = await Promise.all([
+          exec(SWITCHR, ["which", "--json"], { timeout: 10000 }),
+          listRows(["--no-usage"], 10000),
+        ]);
+        if (which.code !== 0) throw new Error(failure(which, "Switchr could not see the agents."));
+        if (!names.rows) throw new Error(names.error);
+        this.agent = JSON.parse(which.stdout)?.[this.address] ?? null;
+        this.menuAccounts = names.rows;
+      } catch (error) {
+        this.menuNote = String(error?.message ?? error);
+        cx.notify();
+        return;
+      }
+      cx.notify();
+      const limits = await full;  // a failure here only leaves "limit unknown"
+      this.menuAccounts = withUsage(this.menuAccounts, limits.rows, UNKNOWN);
+      cx.notify();
+    });
+    cx.notify();
+  }
+
+  moveTo(name, cx) {
+    this.moving = name;
+    cx.notify();
+    cx.spawn(async () => {
+      let ok = false;
+      let message = "";
+      try {
+        const r = await exec(SWITCHR, ["move", this.address, name, "--json"], { timeout: 90000 });
+        let out = null;
+        try { out = JSON.parse(r.stdout); } catch {}
+        ok = out?.ok === true;
+        message = out ? String(out.message ?? "") : failure(r, "The move failed.");
+      } catch (error) {
+        message = String(error?.message ?? error);
+      }
+      notify({ title: "Switchr", body: message || (ok ? `Moved to ${name}.` : "The move failed."),
+        level: ok ? "success" : "error" });
+      const overlay = props()?.overlay;
+      if (overlay) closeOverlay(overlay);
+    });
+  }
+
+  renderAccountMenu(t) {
+    const menu = v_flex().id("switchr-menu").size_full().p(6).gap(1).bg(t.popover).text_size(13);
+    const note = (text, colour = t.dim) => div().px(6).py(4).text_size(12).text_color(colour).child(text);
+    const agent = this.agent;
+    if (this.menuNote) return menu.child(note(this.menuNote, t.blocked));
+    if (!agent) {
+      return menu.child(note(this.menuAccounts === null ? "Checking…"
+        : "Switchr cannot move this agent. It moves Claude Code and Codex agents on this computer."));
+    }
+    menu.child(div().px(6).pt(2).pb(4).text_size(11).text_color(t.dim)
+      .child(`${(KIND_NAMES[agent.kind] ?? agent.kind).toUpperCase()} ACCOUNT`));
+    if (this.menuAccounts === null) return menu.child(note("Checking…"));
+    const busy = !["idle", "done"].includes(agent.state);
+    for (const account of this.menuAccounts.filter((a) => a.kind === agent.kind)) {
+      const current = account.name === agent.account;
+      const loggedIn = !account.pending && account.usage?.state !== "logged-out";
+      const usable = !busy && !current && loggedIn && !this.moving;
+      menu.child(h_flex().id(`switchr-to-${account.name}`)
+        .items_center().gap(8).px(6).py(4).rounded(6)
+        .opacity(current || usable || (this.moving === account.name) ? 1 : 0.5)
+        .when(usable, (el) => el.cursor_pointer()
+          .hover((s) => s.bg(t.hover))
+          .on_click((_event, cx) => this.moveTo(account.name, cx)))
+        .child(div().w(12).flex_none().text_color(t.accent).child(current ? "✓" : ""))
+        .child(v_flex().flex_1().min_w(0)
+          .child(div().truncate().text_color(t.foreground)
+            .child(this.moving === account.name ? `Moving to ${account.name}…` : account.name))
+          .child(div().text_size(11).text_color(t.dim).child(usageLine(account)))));
+    }
+    if (busy) menu.child(note("Busy — you can move it once it has finished."));
+    return menu;
+  }
+
   render() {
     if (this.ask) return this.renderAsk(theme());
+    if (props()?.role === "account") return this.renderAccountMenu(theme());
     if (this.isButton()) return this.renderButton();
     const t = theme();
     this.publishAccent();
@@ -597,7 +1017,8 @@ export default class Powr extends View {
     const body = v_flex().flex_1().min_w(0).h_full().p(16).gap(12)
       .child(this.renderHeader(t, m, on[m.id]))
       .when(Boolean(on[m.id]), (el) => el.child(m.id === "browsr" ? this.renderBrowsrPage(t)
-        : this.renderSpacrPage(t)));
+        : m.id === "spacr" ? this.renderSpacrPage(t)
+        : this.renderSwitchrPage(t)));
     return h_flex()
       .id("root")
       .size_full()

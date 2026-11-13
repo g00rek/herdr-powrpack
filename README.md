@@ -25,6 +25,8 @@ switched on or off from one control panel.**
   its own. Switch spaces and the browser follows.
 - **Spacr** — your projects in folders, each with its own colour and icon, with
   worktrees hanging off the project they belong to.
+- **Switchr** — each Claude Code or Codex agent on the account you choose,
+  moved between accounts without logging out.
 - **Powr panel** — one place to switch modules on and off, see whether the
   browser is healthy, and change their settings.
 
@@ -59,6 +61,8 @@ The installer is safe to run again, for example after `git pull`. It:
    Herdr's project list. Herdr's own layouts are read-only, so a shipped
    layout is cloned first (`main-powr`) and the clone is switched to. Your old
    layout is still one `ctrl-shift-l` away.
+5. makes Switchr's copy of Herdr's Agents list (see [Switchr](#switchr)) and
+   lists your extra accounts in the new-agent menu.
 
 ## Modules
 
@@ -107,6 +111,59 @@ Replaces Herdr's project list.
 Settings: how strongly a folder's colour tints its background.
 
 Switching Spacr off puts Herdr's own list back.
+
+### Switchr
+
+Run each Claude Code or Codex agent on the account you choose, side by side,
+without logging out of anything. Your usual login is the **main** account and is
+never touched; every other account is one you add.
+
+Switchr is off after installing: switch it on in the Powr panel. Switching it
+on swaps Herdr's Agents list for a copy that carries the badge and the
+right-press menu; switching it off puts Herdr's own list back.
+
+- **Adding an account.** On the Switchr page, press **Add Claude account** or
+  **Add Codex account** and type a short name. A tab opens where you log in
+  once. The same login can't be added twice.
+- **Starting an agent on it.** The account appears in Herdr's new-agent menu as
+  `Claude · <name>` or `Codex · <name>`.
+- **Limits.** The page shows how much of each account's five-hour and weekly
+  limit is used.
+- **Moving a running agent.** Right-press it in the Agents list and pick another
+  account. The agent is closed and its conversation is resumed on the new
+  account in the same terminal. This works only once the agent has finished
+  its turn; a busy agent says so and stays where it is.
+- **The badge.** Only agents on a non-main account get a badge: the account's
+  name in its row of the Agents list. An agent on main shows none.
+
+Every extra account shares instructions, memory, skills, settings and history
+with the main one; only the login is its own. So a moved agent keeps all of it.
+User-wide changes made inside an extra-account session (a new MCP server, a
+trusted folder, a setting changed from inside it) don't stick — make them from
+a main-account session.
+
+Codex moving was tested only with the native Codex binary. A Codex installed
+through npm (a node wrapper) is not recognised yet; moving it then refuses and
+leaves the agent as it is.
+
+**Show the account in Claude Code's status line.** A status line script can
+read `CLAUDE_CONFIG_DIR`: an extra account runs with
+`${XDG_DATA_HOME:-~/.local/share}/switchr/claude/<name>`, and no variable means
+main. This prints the account name (main's label comes from Switchr's
+`accounts.json`):
+
+```bash
+#!/usr/bin/env bash
+data="${XDG_DATA_HOME:-$HOME/.local/share}/switchr"
+if [ -n "$CLAUDE_CONFIG_DIR" ] && [ "$(dirname "$CLAUDE_CONFIG_DIR")" = "$data/claude" ]; then basename "$CLAUDE_CONFIG_DIR"
+else jq -r '.main.claude // "main"' "$data/accounts.json" 2>/dev/null || echo main; fi
+```
+
+The copy of the Agents list is made by the installer from the Agents list of
+the Herdr you have, so run the installer again after a Herdr update to bring the
+copy up to date. If a Herdr update changes the list too much to copy, the
+installer says so; adding, starting and the new-agent menu still work, only the
+badge and the right-press menu are missing.
 
 ## For coding agents
 
@@ -161,6 +218,11 @@ If your browser is not found, point at it with
 ~/Projects/herdr-powrpack/bridge.py cleanup
 rm -r ~/.config/herdr-app/mods/powr ~/.config/herdr-app/mods/spacr
 ```
+
+Switch Switchr off in the panel first, then
+`rm -r ~/.config/herdr-app/mods/switchr-agents`. Extra accounts live in
+`~/.local/share/switchr/`; delete it to forget them (main is never there), and
+remove the `switchr-…` entries from `~/.config/herdr-app/programs.json`.
 
 Cleanup also gives web links back to your previous browser if Herdr links
 was on. Then switch back to your old layout (`ctrl-shift-l`) and delete `main-powr`,
