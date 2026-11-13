@@ -408,6 +408,9 @@ export default class Powr extends View {
         if (r.code !== 0) return;
         const found = JSON.parse(r.stdout);
         if (!found || typeof found !== "object") return;
+        // Switched off while the question was out: switching off cleared
+        // the badges, and this late answer must not bring them back.
+        if (!this.modules().switchr) return;
         const where = {};
         for (const [address, row] of Object.entries(found)) {
           if (row && row.main === false && row.account) where[address] = row.account;
@@ -601,6 +604,7 @@ export default class Powr extends View {
         .hover((s) => s.bg(t.hover))
         .on_click((_event, cx) => {
           this.page = m.id;
+          this.removing = null;
           this.loadAccounts(cx);
           cx.notify();
         })
@@ -785,6 +789,14 @@ export default class Powr extends View {
     if (this.removing !== key) {
       this.removing = key;
       this.editing = null;
+      // Armed for a few seconds only: a "Sure?" left standing would remove
+      // on a press made much later, for another reason.
+      cx.timer.after(4000, (cx) => {
+        if (this.removing === key) {
+          this.removing = null;
+          cx.notify();
+        }
+      });
       cx.notify();
       return;
     }
