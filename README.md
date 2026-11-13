@@ -95,6 +95,12 @@ In the panel:
 Under the buttons, one line says what is wrong, if anything, and which button
 fixes it.
 
+When the browser goes down without being asked to (out of memory, a crash, or
+it simply vanished) or one of its tabs crashes, Browsr writes it down, and the
+panel says when it last happened if that was within a day. `./bridge.py crashes`
+lists the last ten, with how each ended. The log of each earlier browser run is
+kept too, the newest ten of them, next to that list.
+
 ### Spacr
 
 Replaces Herdr's project list.
@@ -173,6 +179,7 @@ From inside a Herdr pane:
 ./bridge.py workspace-tabs                     # the tabs of this space, as JSON
 ./bridge.py open-url http://localhost:3000     # open a page without taking focus
 ./bridge.py status                             # what the panel shows, as JSON
+./bridge.py crashes                            # when the browser went down, and how
 ```
 
 For Claude Code, a wrapper attaches the Chrome DevTools MCP to the running

@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import fcntl
+import io
 import json
 import os
 import socket
@@ -1575,6 +1576,219 @@ class TabGroupTests(unittest.TestCase):
             before = bridge.app_focused_where()
             view.write_text(json.dumps({"active": "sp1", "spaces": {"sp1": "tb2"}}))
             self.assertNotEqual(bridge.app_focused_where(), before)
+
+
+def fake_system_log(kernel="", journal=(), coredumpctl=""):
+    """Stand-in for the one seam that reads the system's logs.
+
+    `journal` is a list of coredump records as journalctl prints them with
+    `-o json`; the kernel log is plain text.
+    """
+    calls = []
+
+    def read(argv):
+        calls.append(list(argv))
+        if argv[0] == "coredumpctl":
+            return coredumpctl
+        if "-k" in argv:
+            return kernel
+        if "--user" in argv:
+            return "\n".join(json.dumps(record) for record in journal)
+        return ""
+    read.calls = calls
+    return read
+
+
+def dump_record(pid, signal_name, cmdline):
+    return {
+        "COREDUMP_PID": str(pid),
+        "COREDUMP_SIGNAL_NAME": signal_name,
+        "COREDUMP_SIGNAL": "11",
+        "COREDUMP_TIMESTAMP": "1794489292000000",
+        "COREDUMP_EXE": "/usr/lib/chromium/chromium",
+        "COREDUMP_CMDLINE": cmdline,
+        "MESSAGE": f"Process {pid} (chromium) of user 1000 dumped core.",
+    }
+
+
+class CrashLogTests(unittest.TestCase):
+    """Browsr's browser goes down and nothing used to say why."""
+
+    NOW = 1794563000.0  # 13 Nov 2026, late morning in Europe
+
+    def run_watch(self, polls, system_log):
+        """Feed crash_step a sequence of browser pid lists, ten seconds apart."""
+        state = None
+        now = self.NOW
+        for pids in polls:
+            with patch.object(bridge, "browser_pids", return_value=pids), \
+                    patch.object(bridge, "system_log", system_log):
+                state = bridge.crash_step(state, now)
+            now += bridge.HEALTH_POLL_SECONDS
+        return state
+
+    def entries(self):
+        path = bridge.crash_log_file()
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def test_launch_keeps_the_previous_log_and_only_the_newest_ten(self):
+        with sandboxed_state() as root, \
+                patch.object(bridge, "refresh_extension_if_changed", lambda: False), \
+                patch.object(bridge.subprocess, "Popen", lambda *a, **k: None):
+            log = root / "state" / "chromium.log"
+            for run in range(12):
+                log.write_text(f"run {run}\n")
+                os.utime(log, (self.NOW + run * 60, self.NOW + run * 60))
+                bridge.spawn_browser("/usr/bin/chromium")
+            kept = sorted((root / "state" / "logs").iterdir())
+            self.assertEqual(len(kept), 10, [p.name for p in kept])
+            self.assertTrue(all(p.name.startswith("chromium-") and p.suffix == ".log" for p in kept))
+            self.assertEqual(kept[0].read_text(), "run 2\n")
+            self.assertEqual(kept[-1].read_text(), "run 11\n")
+            self.assertEqual(log.read_text(), "", "the new launch did not get a fresh log")
+
+    def test_a_deliberate_stop_is_not_a_crash(self):
+        with sandboxed_state():
+            state = self.run_watch([[100]], fake_system_log())
+            with patch.object(bridge, "browser_pids", return_value=[100]), \
+                    patch.object(bridge.os, "kill", lambda *a: None), \
+                    patch.object(bridge.time, "time", return_value=self.NOW + 5):
+                bridge.quit_browser()
+            with patch.object(bridge, "browser_pids", return_value=[]), \
+                    patch.object(bridge, "system_log", fake_system_log()):
+                bridge.crash_step(state, self.NOW + 10)
+            self.assertEqual(self.entries(), [])
+
+    def test_an_old_stop_mark_does_not_hide_a_later_crash(self):
+        with sandboxed_state():
+            with patch.object(bridge, "browser_pids", return_value=[100]), \
+                    patch.object(bridge.os, "kill", lambda *a: None), \
+                    patch.object(bridge.time, "time", return_value=self.NOW - 3600):
+                bridge.quit_browser()
+            self.run_watch([[100], []], fake_system_log())
+            self.assertEqual(len(self.entries()), 1)
+
+    def test_out_of_memory(self):
+        kernel = ("Out of memory: Killed process 100 (chromium) total-vm:1540520424kB, "
+                  "anon-rss:602388kB, UID:1000 pgtables:4728kB oom_score_adj:300\n")
+        with sandboxed_state():
+            self.run_watch([[100], []], fake_system_log(kernel=kernel))
+            [entry] = self.entries()
+            self.assertEqual(entry["pid"], 100)
+            self.assertEqual(entry["how"], "killed: out of memory")
+
+    def test_a_core_dump_names_the_signal(self):
+        with sandboxed_state() as root:
+            cmdline = f"$'/usr/lib/chromium/chromium --user-data-dir={root / 'profile'} --no-first-run'"
+            log = fake_system_log(journal=[dump_record(100, "SIGSEGV", cmdline)])
+            self.run_watch([[100], []], log)
+            [entry] = self.entries()
+            self.assertEqual(entry["how"], "crashed: SIGSEGV")
+
+    def test_a_dump_that_arrives_late_corrects_the_entry(self):
+        """systemd-coredump took almost two minutes to record a 60 MB dump
+        here, so the browser is gone well before the evidence is in."""
+        with sandboxed_state() as root:
+            cmdline = f"/usr/lib/chromium/chromium --user-data-dir={root / 'profile'}"
+            records = []
+            log = fake_system_log(journal=records)
+            state = self.run_watch([[100], []], log)
+            self.assertEqual([e["how"] for e in self.entries()], ["closed or ended without a trace"])
+            records.append(dump_record(100, "SIGTRAP", cmdline))
+            with patch.object(bridge, "browser_pids", return_value=[]), \
+                    patch.object(bridge, "system_log", log):
+                bridge.crash_step(state, self.NOW + 90)
+            self.assertEqual([e["how"] for e in self.entries()], ["crashed: SIGTRAP"])
+
+    def test_no_trace_keeps_the_end_of_the_browser_log(self):
+        with sandboxed_state() as root:
+            (root / "state" / "chromium.log").write_text(
+                "".join(f"line {n}\n" for n in range(100)))
+            self.run_watch([[100], []], fake_system_log())
+            [entry] = self.entries()
+            self.assertEqual(entry["how"], "closed or ended without a trace")
+            self.assertEqual(len(entry["log"]), 40)
+            self.assertEqual(entry["log"][-1], "line 99")
+
+    def test_a_tab_crash_is_logged_once(self):
+        with sandboxed_state() as root:
+            ours = f"$'/usr/lib/chromium/chromium --type=renderer --user-data-dir={root / 'profile'} --lang=en-US'"
+            theirs = "$'/usr/lib/chromium/chromium --type=renderer --user-data-dir=/elsewhere --lang=en-US'"
+            log = fake_system_log(journal=[dump_record(555, "SIGSEGV", ours),
+                                           dump_record(556, "SIGSEGV", theirs)])
+            self.run_watch([[100], [100], [100]], log)
+            [entry] = self.entries()
+            self.assertEqual(entry["how"], "tab crashed: SIGSEGV")
+            self.assertEqual(entry["pid"], 555)
+            # A watcher started afresh does not log it a second time.
+            self.run_watch([[100], [100]], log)
+            self.assertEqual(len(self.entries()), 1)
+
+    def test_missing_tools_mean_no_trace_and_no_failure(self):
+        def missing(*args, **kwargs):
+            raise FileNotFoundError("journalctl")
+
+        def slow(*args, **kwargs):
+            raise subprocess.TimeoutExpired("journalctl", 3)
+
+        for broken in (missing, slow):
+            with sandboxed_state(), patch.object(bridge.subprocess, "run", broken):
+                self.assertEqual(bridge.system_log(["journalctl", "-k"]), "")
+                state = None
+                for now, pids in ((self.NOW, [100]), (self.NOW + 10, [])):
+                    with patch.object(bridge, "browser_pids", return_value=pids):
+                        state = bridge.crash_step(state, now)
+                self.assertEqual([e["how"] for e in self.entries()],
+                                 ["closed or ended without a trace"])
+
+    def write_entries(self, entries):
+        bridge.crash_log_file().write_text(
+            "".join(json.dumps(entry) + "\n" for entry in entries))
+
+    def at(self, day, hour, minute):
+        import datetime
+        return datetime.datetime(2026, 11, day, hour, minute).astimezone().isoformat(timespec="seconds")
+
+    def test_the_crashes_command(self):
+        with sandboxed_state():
+            entries = [{"at": self.at(1 + n, 9, 0), "pid": n, "kind": "browser",
+                        "how": "closed or ended without a trace"} for n in range(11)]
+            entries.append({"at": self.at(13, 10, 42), "pid": 99, "kind": "browser",
+                            "how": "killed: out of memory"})
+            self.write_entries(entries)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                bridge.print_crashes()
+            lines = out.getvalue().splitlines()
+            self.assertEqual(lines[9], "13 Nov 10:42 — killed: out of memory")
+            self.assertEqual(lines[0], "3 Nov 09:00 — closed or ended without a trace")
+            self.assertIn(str(bridge.crash_log_file()), lines[-1])
+
+    def test_the_crashes_command_with_nothing_logged(self):
+        with sandboxed_state():
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                bridge.print_crashes()
+            self.assertIn("No crashes", out.getvalue())
+
+    def test_status_says_when_it_last_went_down(self):
+        import datetime
+        with sandboxed_state():
+            now = datetime.datetime(2026, 11, 13, 18, 0).timestamp()
+            self.write_entries([{"at": self.at(13, 10, 42), "pid": 1, "kind": "browser",
+                                 "how": "killed: out of memory"}])
+            self.assertEqual(bridge.last_down(now), "Last went down 10:42 — out of memory.")
+            self.assertIsNone(bridge.last_down(now + 86400))
+            self.write_entries([{"at": self.at(13, 10, 42), "pid": 1, "kind": "tab",
+                                 "how": "tab crashed: SIGSEGV"}])
+            self.assertEqual(bridge.last_down(now), "A tab crashed 10:42 — SIGSEGV.")
+            with patch.object(bridge, "herdr_workspaces", return_value=[]), \
+                    patch.object(bridge, "bridge_alive", return_value=False), \
+                    patch.object(bridge, "browser_alive", return_value=False), \
+                    patch.object(bridge, "following_now", return_value=False):
+                self.assertIn("last_down", bridge.browser_status())
 
 
 if __name__ == "__main__":
