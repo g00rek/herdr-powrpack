@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import base64
+import concurrent.futures
 import contextlib
 import fcntl
 import http.client
@@ -498,11 +499,14 @@ CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CACHE_SECONDS = 120
 RENEW_WITHIN = 300
 LOCK_WAIT = 15
+# Per request. `list` asks every account at once, so a hung network costs
+# about this long (twice with a renewal), not this long per account.
+HTTP_TIMEOUT = 4
 
 
 def _http(request):
     """The one seam for the network: returns the decoded JSON of a reply."""
-    with urllib.request.urlopen(request, timeout=15) as reply:
+    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as reply:
         return json.loads(reply.read().decode())
 
 
@@ -640,18 +644,22 @@ def _cache_load():
 
 
 def _cache_store(key, value):
-    data = _cache_load()
-    data[key] = {"at": time.time(), "value": value}
     path = _cache_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".usage-")
-    try:
-        with os.fdopen(fd, "w") as handle:
-            json.dump(data, handle)
-        os.replace(tmp, path)
-    except BaseException:
-        with_suppress_unlink(tmp)
-        raise
+    # Accounts are asked at once (threads, and the panel and menu as separate
+    # processes): read, change and write under one lock, or keys get lost.
+    with open(path.parent / ".usage.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = _cache_load()
+        data[key] = {"at": time.time(), "value": value}
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".usage-")
+        try:
+            with os.fdopen(fd, "w") as handle:
+                json.dump(data, handle)
+            os.replace(tmp, path)
+        except BaseException:
+            with_suppress_unlink(tmp)
+            raise
 
 
 def _blank(state):
@@ -736,8 +744,11 @@ def usage(kind, name, renew=True):
     return value
 
 
-def list_accounts():
-    """Every account, main first per kind, each with its usage."""
+def list_accounts(with_usage=True):
+    """Every account, main first per kind, each with its usage.
+
+    Without usage nothing goes to the network and `usage` is None. With it,
+    every account is asked at once, so one hung account does not hold up the rest."""
     reg = load_registry()
     out = []
     for kind in KINDS:
@@ -745,15 +756,22 @@ def list_accounts():
         for entry in reg["accounts"]:
             if entry.get("kind") == kind:
                 out.append((kind, entry["name"], False, bool(entry.get("pending"))))
-    def safe(k, n, p):
+
+    def safe(row):
+        k, n, _m, p = row
         if p:
             return _blank("logged-out")
         try:
             return usage(k, n)
         except Exception:
             return _blank("unknown")
-    return [{"kind": k, "name": n, "main": m, "pending": p, "usage": safe(k, n, p)}
-            for k, n, m, p in out]
+    if not with_usage:
+        found = [None] * len(out)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(out))) as pool:
+            found = list(pool.map(safe, out))
+    return [{"kind": k, "name": n, "main": m, "pending": p, "usage": u}
+            for (k, n, m, p), u in zip(out, found)]
 
 
 # ---------------------------------------------------------------- launcher
@@ -1173,6 +1191,8 @@ def build_parser():
     remove_cmd.add_argument("name")
     list_cmd = sub.add_parser("list", help="list accounts with what is left on each")
     list_cmd.add_argument("--json", action="store_true")
+    list_cmd.add_argument("--no-usage", action="store_true",
+                          help="names only: no network, no limits")
     which_cmd = sub.add_parser("which", help="which account each agent terminal is on")
     which_cmd.add_argument("--json", action="store_true")
     move_cmd = sub.add_parser("move", help="move an idle agent to another account, same conversation")
@@ -1192,13 +1212,16 @@ def main(argv=None):
         return
     try:
         if options.command == "list":
-            rows = list_accounts()
+            rows = list_accounts(with_usage=not options.no_usage)
             if options.json:
                 print(json.dumps(rows))
             else:
                 for r in rows:
                     u = r["usage"]
-                    print(f"{r['kind']:7}{r['name']:24}{u['state']:11}session {u['session']}  week {u['week']}")
+                    if u is None:
+                        print(f"{r['kind']:7}{r['name']}")
+                    else:
+                        print(f"{r['kind']:7}{r['name']:24}{u['state']:11}session {u['session']}  week {u['week']}")
         elif options.command == "which":
             found = which()
             if options.json:

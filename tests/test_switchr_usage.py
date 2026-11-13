@@ -1,5 +1,8 @@
+import contextlib
+import io
 import json
 import os
+import threading
 import tempfile
 import time
 import unittest
@@ -216,6 +219,62 @@ class UsageTests(unittest.TestCase):
                        return_value=Reply({"access_token": "a2", "refresh_token": "r2"})):
                 self.assertFalse(switchr._renew("claude", {"main": True, "name": "main"}, creds))
             self.assertEqual((main / ".credentials.json").read_text(), before)
+
+    def confirmed(self, kind, name):
+        switchr.add(kind, name)
+        reg = switchr.load_registry()
+        for entry in reg["accounts"]:
+            entry.pop("pending", None)
+        switchr.save_registry(reg)
+
+    def test_list_without_usage_needs_no_network(self):
+        with sandbox():
+            self.confirmed("claude", "work")
+            out = io.StringIO()
+            with patch.object(switchr, "usage", side_effect=AssertionError("no usage")), \
+                    patch("urllib.request.urlopen", side_effect=AssertionError("no network")), \
+                    contextlib.redirect_stdout(out):
+                self.assertIsNone(switchr.main(["list", "--json", "--no-usage"]))
+            rows = json.loads(out.getvalue())
+            self.assertEqual([(r["kind"], r["name"], r["main"], r["pending"], r["usage"]) for r in rows],
+                             [("claude", "main", True, False, None), ("claude", "work", False, False, None),
+                              ("codex", "main", True, False, None)])
+
+    def test_list_asks_every_account_at_once(self):
+        """One hung account must not hold up the others: all are asked in parallel."""
+        with sandbox():
+            self.confirmed("claude", "work")
+            self.confirmed("codex", "work")
+            together = threading.Barrier(4, timeout=5)  # sequential calls would never meet
+
+            def fake(kind, name):
+                together.wait()
+                return {"session": 1, "week": 2, "resets": None, "state": "ok"}
+            with patch.object(switchr, "usage", side_effect=fake):
+                rows = switchr.list_accounts()
+            self.assertEqual([r["usage"]["state"] for r in rows], ["ok"] * 4)
+            self.assertEqual([(r["kind"], r["name"]) for r in rows],
+                             [("claude", "main"), ("claude", "work"), ("codex", "main"), ("codex", "work")])
+
+    def test_usage_request_gives_up_after_four_seconds(self):
+        with sandbox() as root:
+            main = root / "home" / ".claude"
+            main.mkdir()
+            write_claude(main, 3600)
+            with patch("urllib.request.urlopen", return_value=Reply(CLAUDE_REPLY)) as op:
+                switchr.usage("claude", "main")
+            self.assertEqual(op.call_args.kwargs.get("timeout"), 4)
+
+    def test_cache_keeps_every_key_written_at_once(self):
+        with sandbox():
+            value = {"session": 1, "week": 2, "resets": None, "state": "ok"}
+            threads = [threading.Thread(target=switchr._cache_store, args=(f"k/{i}", value))
+                       for i in range(16)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual(len(switchr._cache_load()), 16)
 
     def test_lock_times_out_when_held(self):
         with sandbox():

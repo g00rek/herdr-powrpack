@@ -3,6 +3,7 @@ import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { exec, focused, spaces, theme, home, appHome, notify, run, props, shared, setShared,
 	closeOverlay, layout, openOverlay, readTextFile, writeTextFile } from "herdr";
 import { swapMod, savedSizes } from "./layout-swap.js";
+import { usageLine, withUsage, UNKNOWN } from "./switchr-accounts.js";
 
 // Powr: one button in the chrome and one panel. The panel switches the
 // modules of the pack on and off and shows a page for each.
@@ -68,12 +69,16 @@ const ALL = [
 		about: "A Claude or Codex account per agent, switched without logging out." },
 ];
 
-/** What is left on an account, in one short line. */
-function usageLine(account) {
-  const u = account?.usage ?? {};
-  if (account?.pending || u.state === "logged-out") return "Not logged in";
-  if (u.state !== "ok" || u.session == null || u.week == null) return "limit unknown";
-  return `5 h ${u.session}% · week ${u.week}%`;
+/** Run a `list --json`: { rows } on success, { error } with a sentence when it failed. */
+async function listRows(args, timeout) {
+  try {
+    const r = await exec(SWITCHR, ["list", "--json", ...args], { timeout });
+    if (r.code !== 0) return { error: failure(r, "Switchr could not list the accounts.") };
+    const rows = JSON.parse(r.stdout);
+    return { rows: Array.isArray(rows) ? rows : [] };
+  } catch (error) {
+    return { error: String(error?.message ?? error) };
+  }
 }
 
 /** The last line a failed command printed, without the program's name. */
@@ -743,17 +748,25 @@ export default class Powr extends View {
     if (this.page !== "switchr" || !this.modules().switchr || this.listing) return;
     this.listing = true;
     cx.spawn(async (cx) => {
-      try {
-        const r = await exec(SWITCHR, ["list", "--json"], { timeout: 20000 });
-        if (r.code !== 0) throw new Error(failure(r, "Switchr could not list the accounts."));
-        const rows = JSON.parse(r.stdout);
-        this.accounts = Array.isArray(rows) ? rows : [];
+      // Both start now; the names need no network and come first, so a hung
+      // network only leaves the limits on "Checking limits…" for a while.
+      const full = listRows([], 20000);
+      const names = await listRows(["--no-usage"], 10000);
+      if (names.rows) {
+        this.accounts = withUsage(names.rows, this.accounts, null);
         this.accountsNote = "";
-      } catch (error) {
-        this.accountsNote = String(error?.message ?? error);
-      } finally {
-        this.listing = false;
+        cx.notify();
       }
+      const limits = await full;
+      if (limits.rows && !names.rows) {
+        this.accounts = limits.rows;
+        this.accountsNote = "";
+      } else if (this.accounts) {
+        this.accounts = withUsage(this.accounts, limits.rows, UNKNOWN);
+      } else {
+        this.accountsNote = names.error;
+      }
+      this.listing = false;
       cx.notify();
     });
   }
@@ -903,8 +916,9 @@ export default class Powr extends View {
 
   /**
    * The move menu. What `which` said last is on screen at once; a fresh
-   * answer, with the accounts and their limits, replaces it a moment later,
-   * so "busy" is never a few seconds stale when it matters.
+   * answer, with the account names, replaces it a moment later, so "busy" is
+   * never a few seconds stale when it matters. The limits come last and are
+   * only shown: moving needs no network, so a hung one never blocks the menu.
    */
   initAccountMenu(cx) {
     this.address = props()?.address ?? null;
@@ -914,18 +928,24 @@ export default class Powr extends View {
     this.menuNote = "";
     this.moving = null;
     cx.spawn(async (cx) => {
+      const full = listRows([], 20000);
       try {
-        const [which, list] = await Promise.all([
+        const [which, names] = await Promise.all([
           exec(SWITCHR, ["which", "--json"], { timeout: 10000 }),
-          exec(SWITCHR, ["list", "--json"], { timeout: 20000 }),
+          listRows(["--no-usage"], 10000),
         ]);
         if (which.code !== 0) throw new Error(failure(which, "Switchr could not see the agents."));
-        if (list.code !== 0) throw new Error(failure(list, "Switchr could not list the accounts."));
+        if (!names.rows) throw new Error(names.error);
         this.agent = JSON.parse(which.stdout)?.[this.address] ?? null;
-        this.menuAccounts = JSON.parse(list.stdout);
+        this.menuAccounts = names.rows;
       } catch (error) {
         this.menuNote = String(error?.message ?? error);
+        cx.notify();
+        return;
       }
+      cx.notify();
+      const limits = await full;  // a failure here only leaves "limit unknown"
+      this.menuAccounts = withUsage(this.menuAccounts, limits.rows, UNKNOWN);
       cx.notify();
     });
     cx.notify();
