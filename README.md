@@ -118,30 +118,32 @@ Run each Claude Code or Codex agent on the account you choose, side by side,
 without logging out of anything. Your usual login is the **main** account and is
 never touched; every other account is one you add.
 
+Switchr is off after installing: switch it on in the Powr panel. Switching it
+on swaps Herdr's Agents list for a copy that carries the badge and the
+right-press menu; switching it off puts Herdr's own list back.
+
 - **Adding an account.** On the Switchr page, press **Add Claude account** or
   **Add Codex account** and type a short name. A tab opens where you log in
   once. The same login can't be added twice.
 - **Starting an agent on it.** The account appears in Herdr's new-agent menu as
   `Claude · <name>` or `Codex · <name>`.
+- **Limits.** The page shows how much of each account's five-hour and weekly
+  limit is used.
 - **Moving a running agent.** Right-press it in the Agents list and pick another
   account. The agent is closed and its conversation is resumed on the new
   account in the same terminal. This works only once the agent has finished
   its turn; a busy agent says so and stays where it is.
 - **The badge.** An agent on any account other than main shows that account's
   name in its row of the Agents list.
-- **Limits.** The page shows how much of each account's five-hour and weekly
-  limit is used.
 
 Every extra account shares instructions, memory, skills, settings and history
 with the main one; only the login is its own. So a moved agent keeps all of it.
 
-Switchr is off until you switch it on, because it swaps Herdr's Agents list for
-a copy that carries the badge and the right-press menu. That copy is made by the
-installer from the Agents list of the Herdr you have, so run the installer again
-after a Herdr update to bring the copy up to date. If a Herdr update changes the
-list too much to copy, the installer says so; adding, starting and the new-agent
-menu still work, only the badge and the right-press menu are missing.
-Switching Switchr off puts Herdr's own list back.
+The copy of the Agents list is made by the installer from the Agents list of
+the Herdr you have, so run the installer again after a Herdr update to bring the
+copy up to date. If a Herdr update changes the list too much to copy, the
+installer says so; adding, starting and the new-agent menu still work, only the
+badge and the right-press menu are missing.
 
 ## For coding agents
 

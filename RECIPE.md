@@ -1,7 +1,7 @@
 # Herdr Powr Pack
 
-Two mods for the Herdr desktop app, the browser helper behind one of them, and
-Switchr. A **Powr Pack** button under Settings opens one control panel; there,
+Three modules for the Herdr desktop app, and the browser helper behind one of
+them. A **Powr Pack** button under Settings opens one control panel; there,
 Browsr (a tab group per space in a dedicated Chromium), Spacr (the project list
 with folders, colours, icons and worktrees under their project) and Switchr (a
 Claude Code or Codex account per agent) are switched on and off and set up.

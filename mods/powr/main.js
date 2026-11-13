@@ -2,7 +2,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { exec, focused, spaces, theme, home, appHome, notify, run, props, shared, setShared,
 	closeOverlay, layout, openOverlay, readTextFile, writeTextFile } from "herdr";
-import { swapMod } from "./layout-swap.js";
+import { swapMod, savedSizes } from "./layout-swap.js";
 
 // Powr: one button in the chrome and one panel. The panel switches the
 // modules of the pack on and off and shows a page for each.
@@ -331,12 +331,15 @@ export default class Powr extends View {
     if (id === "spacr") {
       // The switch only sticks when the layout followed: otherwise the
       // list stays what it was and the toggle would lie.
-      if (!this.swapLayout(on ? "spaces" : "spacr", on ? "spacr" : "spaces")) {
-        this.cannotSwap("project list");
+      cx.spawn(async (cx) => {
+        if (!(await this.swapLayout(on ? "spaces" : "spacr", on ? "spacr" : "spaces"))) {
+          this.cannotSwap("project list");
+          cx.notify();
+          return;
+        }
+        setShared(MODULES, { ...this.modules(), [id]: on });
         cx.notify();
-        return;
-      }
-      setShared(MODULES, { ...this.modules(), [id]: on });
+      });
     }
     if (id === "switchr") {
       cx.spawn(async (cx) => {
@@ -355,7 +358,7 @@ export default class Powr extends View {
             return;
           }
         }
-        if (!this.swapLayout(on ? "agents" : SWITCHR_LIST, on ? SWITCHR_LIST : "agents")) {
+        if (!(await this.swapLayout(on ? "agents" : SWITCHR_LIST, on ? SWITCHR_LIST : "agents"))) {
           this.cannotSwap("agents list");
           cx.notify();
           return;
@@ -373,12 +376,25 @@ export default class Powr extends View {
     cx.notify();
   }
 
-  /** Point the layout's `from` block at `to`. True when something changed. */
-  swapLayout(from, to) {
+  /**
+   * Point the layout's `from` block at `to`. True when something changed.
+   * layout.set drops the sizes the person dragged (the app's click file for
+   * the layout), so they are read first and put back right after.
+   */
+  async swapLayout(from, to) {
+    let sizes = [];
+    try {
+      const name = shared("layout");
+      const text = name ? await readTextFile(`${appHome()}/layouts/.state/${name}.json`) : null;
+      if (text) sizes = savedSizes(text);
+    } catch {}
     try {
       const { tree, changed } = swapMod(layout(), from, to);
       if (changed > 0) {
         run("layout.set", { layout: tree });
+        for (const { id, ...size } of sizes) {
+          try { run("layout.resize", { id, ...size }); } catch {}
+        }
         return true;
       }
     } catch {}

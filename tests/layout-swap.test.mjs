@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { swapMod } from '../mods/powr/layout-swap.js';
+import { swapMod, savedSizes } from '../mods/powr/layout-swap.js';
 
 const tree = {
 	type: 'column', children: [
@@ -40,4 +40,28 @@ test('switchr swaps only the agents block, and switching back restores it', () =
 	const { tree: off, changed: back } = swapMod(on, 'switchr-agents', 'agents');
 	assert.equal(back, 1);
 	assert.deepEqual(off, tree);
+});
+
+test('saved sizes: every dragged px or weight, nothing else', () => {
+	const text = JSON.stringify({
+		nodes: {
+			agents: { size: { weight: 0.3385461 } },
+			spaces: { size: { weight: 1.6614538 } },
+			taskbar: { size: { px: 21.538 } },
+			main: { pane: { header_height: 13.8 } },
+		},
+		file: { id: 'r', type: 'column' },
+	});
+	assert.deepEqual(savedSizes(text), [
+		{ id: 'agents', weight: 0.3385461 },
+		{ id: 'spaces', weight: 1.6614538 },
+		{ id: 'taskbar', px: 21.538 },
+	]);
+});
+
+test('saved sizes: no file, bad JSON or no nodes gives nothing', () => {
+	assert.deepEqual(savedSizes(''), []);
+	assert.deepEqual(savedSizes('{not json'), []);
+	assert.deepEqual(savedSizes('null'), []);
+	assert.deepEqual(savedSizes('{"file":{}}'), []);
 });
