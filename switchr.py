@@ -145,15 +145,16 @@ class SwitchrError(Exception):
 # ------------------------------------------------------------------- homes
 
 def _guard_home(kind, home):
-    """Refuse any home that is a main folder, inside one, or outside the data directory."""
+    """Refuse any home but exactly <data dir>/<kind>/<valid name>: never a main
+    folder, never the data directory or a kind's folder (which hold every account)."""
     path = Path(home).resolve()
     data = data_dir().resolve()
     for other in KINDS:
         main = main_home(other).resolve()
         if path == main or main in path.parents:
             raise SwitchrError(f"refusing {path}: it is (or is inside) the main {other} folder")
-    if path == data or data not in path.parents:
-        raise SwitchrError(f"refusing {path}: not inside {data}")
+    if kind not in KINDS or path.parent != data / kind or not NAME_RE.match(path.name):
+        raise SwitchrError(f"refusing {path}: not an account folder in {data / kind}")
     return path
 
 
@@ -185,6 +186,25 @@ def _sync_claude_json(home):
         raise
 
 
+FORKED = ".switchr-forked"
+
+
+def _set_aside(home, link):
+    """Move a real file or folder that took a shared link's place into
+    <home>/.switchr-forked/<name>.<time>, so the link can be made again."""
+    folder = home / FORKED
+    folder.mkdir(mode=0o700, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    target = folder / f"{link.name}.{stamp}"
+    n = 1
+    while os.path.lexists(target):
+        n += 1
+        target = folder / f"{link.name}.{stamp}-{n}"
+    os.rename(link, target)
+    print(f"switchr: {link.name} in {home} was a copy instead of the shared one; "
+          f"kept it as {target} and shared the main one again", file=sys.stderr)
+
+
 def prepare_home(kind, home):
     """Make `home` an extra account folder that mirrors main except the login."""
     home = Path(home)
@@ -203,8 +223,11 @@ def prepare_home(kind, home):
                 if Path(os.readlink(link)) == entry:
                     continue
                 link.unlink()
-            elif link.exists():
-                continue  # a real file here is the account's own; leave it
+            elif os.path.lexists(link):
+                # An agent saved a shared file by writing a new one over the
+                # link (Claude's settings.json through /config, Codex's
+                # config.toml). Left alone it would differ from main forever.
+                _set_aside(home, link)
             link.symlink_to(entry)
     if kind == "claude":
         _sync_claude_json(home)
@@ -353,7 +376,7 @@ def confirm(kind, name):
             entry = item
     save_registry(reg)
     sync_programs()
-    return entry
+    return {**entry, "email": found["email"]}  # the identity seen, so callers need not ask again
 
 
 def rename(kind, old, new):
@@ -448,6 +471,8 @@ def login(kind, name):
     entry = account(kind, name)
     if entry is not None and entry.get("main"):
         raise SwitchrError("the main account is logged in through the agent itself, not Switchr")
+    if entry is not None and not entry.get("pending"):
+        raise SwitchrError(f"{name} is already logged in; remove it first to log in again.")
     if entry is None:
         entry = add(kind, name)
     argv = ["claude", "auth", "login"] if kind == "claude" else ["codex", "login"]
@@ -457,7 +482,7 @@ def login(kind, name):
     except OSError as error:
         raise SwitchrError(f"cannot start {argv[0]}: {error}")
     done = confirm(kind, name)
-    return f"{kind} account {name!r} is logged in as {identity(kind, done['home'])['email']}"
+    return f"{kind} account {name!r} is logged in as {done['email']}"
 
 
 # ------------------------------------------------------------------- limits
@@ -530,7 +555,15 @@ def _read_credentials(kind, entry):
         return None
 
 
+def _main_credentials():
+    return {os.path.realpath(main_home("claude") / ".credentials.json"),
+            os.path.realpath(main_home("codex") / "auth.json")}
+
+
 def _write_credentials(path, raw):
+    # Switchr never rewrites a main login, even through a link to it.
+    if os.path.realpath(path) in _main_credentials():
+        raise SwitchrError(f"refusing to write {path}: it is a main account's login")
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".cred-")
     try:
         with os.fdopen(fd, "w") as handle:
@@ -560,7 +593,7 @@ def _lifetime(reply):
 def _renew(kind, entry, creds):
     """Exchange the refresh token for a new pair and store it. True on success."""
     raw, _access, refresh, _exp, _account_id = creds
-    if not refresh:
+    if not refresh or entry.get("main"):
         return False
     try:
         if kind == "claude":
@@ -588,7 +621,7 @@ def _renew(kind, entry, creds):
         return False
     try:
         _write_credentials(_cred_path(kind, entry), raw)
-    except OSError:
+    except (OSError, SwitchrError):
         return False
     return True
 
@@ -742,13 +775,12 @@ def launch_argv(kind, name, args):
 def run(kind, name, args):
     env_changes, argv = launch_argv(kind, name, args)
     entry = account(kind, name)
-    if not entry.get("main"):
-        prepare_home(kind, Path(entry["home"]))
     if not entry.get("main"):  # Switchr never renews main, so only extras can race
         try:
+            prepare_home(kind, Path(entry["home"]))
             with account_lock(kind, entry):  # wait out a renewal; released before exec
                 pass
-        except SwitchrError as error:
+        except (SwitchrError, OSError) as error:
             raise SystemExit(f"switchr: {error}")
     env = dict(os.environ)
     for key, value in env_changes.items():

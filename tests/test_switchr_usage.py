@@ -187,6 +187,36 @@ class UsageTests(unittest.TestCase):
             self.assertEqual(rows[0]["usage"]["state"], "logged-out")
             self.assertTrue(rows[1]["pending"])
 
+    def test_credentials_of_main_are_never_written(self):
+        with sandbox() as root:
+            for kind, folder, leaf in (("claude", ".claude", ".credentials.json"),
+                                       ("codex", ".codex", "auth.json")):
+                main = root / "home" / folder
+                main.mkdir()
+                (main / leaf).write_text("main login")
+                with self.assertRaises(switchr.SwitchrError):
+                    switchr._write_credentials(main / leaf, {"x": 1})
+                self.assertEqual((main / leaf).read_text(), "main login")
+            # an extra home whose login file is a link to main's is refused too
+            entry = switchr.add("claude", "work")
+            home = Path(entry["home"])
+            (home / ".credentials.json").symlink_to(root / "home" / ".claude" / ".credentials.json")
+            with self.assertRaises(switchr.SwitchrError):
+                switchr._write_credentials(home / ".credentials.json", {"x": 1})
+            self.assertEqual((root / "home" / ".claude" / ".credentials.json").read_text(), "main login")
+
+    def test_renew_refuses_main_credentials(self):
+        with sandbox() as root:
+            main = root / "home" / ".claude"
+            main.mkdir()
+            write_claude(main, 10)
+            before = (main / ".credentials.json").read_text()
+            creds = switchr._read_credentials("claude", {"main": True})
+            with patch("urllib.request.urlopen",
+                       return_value=Reply({"access_token": "a2", "refresh_token": "r2"})):
+                self.assertFalse(switchr._renew("claude", {"main": True, "name": "main"}, creds))
+            self.assertEqual((main / ".credentials.json").read_text(), before)
+
     def test_lock_times_out_when_held(self):
         with sandbox():
             entry = switchr.add("claude", "work")

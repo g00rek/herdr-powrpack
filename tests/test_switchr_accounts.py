@@ -70,7 +70,7 @@ class AccountTests(unittest.TestCase):
                 with self.assertRaises(switchr.SwitchrError):  # same as account a
                     switchr.confirm("codex", "b")
                 self.assertIsNone(switchr.account("codex", "b"))
-                listed = json.loads((Path(self.herdr.name) / "programs.json").read_text())["programs"]
+                listed = json.loads((Path(os.environ["HERDR_APP_HOME"]) / "programs.json").read_text())["programs"]
                 self.assertIn("switchr-codex-a", listed)
                 self.assertNotIn("switchr-codex-b", listed)
 
@@ -133,7 +133,7 @@ class AccountTests(unittest.TestCase):
 
     def test_sync_programs_owns_only_its_keys(self):
         with sandbox():
-            path = Path(self.herdr.name) / "programs.json"
+            path = Path(os.environ["HERDR_APP_HOME"]) / "programs.json"
             path.write_text(json.dumps({"programs": {
                 "lazygit": {"name": "lazygit", "run": ["lazygit"]},
                 "switchr-claude-old": {"name": "x", "run": ["x"]}}, "other": 1}))
@@ -156,7 +156,7 @@ class AccountTests(unittest.TestCase):
     def test_sync_programs_creates_missing_file(self):
         with sandbox():
             switchr.sync_programs()
-            self.assertEqual(json.loads((Path(self.herdr.name) / "programs.json").read_text()),
+            self.assertEqual(json.loads((Path(os.environ["HERDR_APP_HOME"]) / "programs.json").read_text()),
                              {"programs": {}})
 
     def test_guard_refuses_main_inside_main_and_outside_data(self):
@@ -168,6 +168,12 @@ class AccountTests(unittest.TestCase):
                               ("codex", root / "home" / ".codex"),
                               ("claude", root / "elsewhere"),
                               ("claude", root / "data" / "switchr"),
+                              ("claude", root / "data" / "switchr" / "claude"),
+                              ("codex", root / "data" / "switchr" / "codex"),
+                              ("claude", root / "data" / "switchr" / "codex" / "work"),
+                              ("claude", root / "data" / "switchr" / "claude" / "Bad Name"),
+                              ("claude", root / "data" / "switchr" / "claude" / "work" / "sub"),
+                              ("claude", root / "data" / "switchr" / "gemini" / "work"),
                               ("claude", root / "data")):
                 with self.assertRaises(switchr.SwitchrError, msg=str(bad)):
                     switchr.prepare_home(kind, bad)
@@ -181,6 +187,19 @@ class AccountTests(unittest.TestCase):
                 with self.assertRaises(switchr.SwitchrError):
                     switchr.rename("claude", "evil", "fine")
             self.assertTrue((root / "home" / ".claude").is_dir())
+
+    def test_remove_never_wipes_the_kind_folder(self):
+        """A registry entry whose home is the folder of every account of a kind."""
+        with sandbox() as root:
+            switchr.add("claude", "work")
+            kind_dir = root / "data" / "switchr" / "claude"
+            reg = switchr.load_registry()
+            reg["accounts"].append({"kind": "claude", "name": "evil", "home": str(kind_dir)})
+            switchr.save_registry(reg)
+            with patch.object(switchr, "running_homes", return_value={}):
+                with self.assertRaises(switchr.SwitchrError):
+                    switchr.remove("claude", "evil")
+            self.assertTrue((kind_dir / "work").is_dir())
 
 
 class IdentityTests(unittest.TestCase):
@@ -259,6 +278,33 @@ class LoginTests(unittest.TestCase):
             self.assertEqual(env["CLAUDE_CONFIG_DIR"], switchr.account("claude", "work")["home"])
             self.assertFalse(switchr.account("claude", "work").get("pending"))
             self.assertIn("work", message)
+            self.assertIn("a@b", message)
+
+    def test_login_refuses_an_account_already_logged_in(self):
+        with sandbox():
+            switchr.add("claude", "bonus")
+            reg = switchr.load_registry()
+            reg["accounts"][0].pop("pending")
+            switchr.save_registry(reg)
+            with patch.object(switchr.subprocess, "run") as run:
+                with self.assertRaises(switchr.SwitchrError) as raised:
+                    switchr.login("claude", "bonus")
+            run.assert_not_called()
+            self.assertEqual(str(raised.exception),
+                             "bonus is already logged in; remove it first to log in again.")
+            self.assertIsNotNone(switchr.account("claude", "bonus"))
+
+    def test_login_reports_the_identity_confirm_saw(self):
+        """A second identity lookup that comes back empty must not crash login."""
+        with sandbox():
+            answers = iter([{"email": "a@b", "org": "o"}, None])  # extra, then main
+
+            def ident(kind, home):
+                return next(answers, None)
+            with patch.object(switchr.subprocess, "run",
+                              return_value=subprocess.CompletedProcess([], 0)), \
+                    patch.object(switchr, "identity", side_effect=ident):
+                message = switchr.login("claude", "work")
             self.assertIn("a@b", message)
 
     def test_login_refuses_main(self):

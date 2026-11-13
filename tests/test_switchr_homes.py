@@ -1,4 +1,5 @@
 import contextlib
+import io
 import importlib.util
 import json
 import os
@@ -16,12 +17,15 @@ SPEC.loader.exec_module(switchr)
 
 @contextlib.contextmanager
 def sandbox():
-    """A temp HOME and XDG_DATA_HOME, so no test touches the real agent folders."""
+    """A temp HOME, XDG_DATA_HOME, XDG_CACHE_HOME and HERDR_APP_HOME, so no test
+    touches the real agent folders, the usage cache or Herdr's programs file."""
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        (root / "home").mkdir()
-        (root / "data").mkdir()
-        with patch.dict(os.environ, {"HOME": str(root / "home"), "XDG_DATA_HOME": str(root / "data")}):
+        for name in ("home", "data", "cache", "herdr"):
+            (root / name).mkdir()
+        with patch.dict(os.environ, {"HOME": str(root / "home"), "XDG_DATA_HOME": str(root / "data"),
+                                     "XDG_CACHE_HOME": str(root / "cache"),
+                                     "HERDR_APP_HOME": str(root / "herdr")}):
             yield root
 
 
@@ -33,7 +37,7 @@ class HomeTests(unittest.TestCase):
             (main / "projects").mkdir()
             (main / "CLAUDE.md").write_text("x")
             (main / ".credentials.json").write_text("secret")
-            home = root / "data" / "switchr" / "extra"
+            home = root / "data" / "switchr" / "claude" / "extra"
             switchr.prepare_home("claude", home)
             for name in ("CLAUDE.md", "skills", "projects"):
                 self.assertTrue((home / name).is_symlink(), name)
@@ -45,7 +49,7 @@ class HomeTests(unittest.TestCase):
         with sandbox() as root:
             main = root / "home" / ".codex"
             main.mkdir(parents=True)
-            home = root / "data" / "switchr" / "extra"
+            home = root / "data" / "switchr" / "codex" / "extra"
             switchr.prepare_home("codex", home)
             (main / "plugins").mkdir()
             switchr.prepare_home("codex", home)
@@ -55,7 +59,7 @@ class HomeTests(unittest.TestCase):
         with sandbox() as root:
             main = root / "home" / ".claude"
             (main / "old").mkdir(parents=True)
-            home = root / "data" / "switchr" / "extra"
+            home = root / "data" / "switchr" / "claude" / "extra"
             switchr.prepare_home("claude", home)
             self.assertTrue((home / "old").is_symlink())
             shutil.rmtree(main / "old")
@@ -67,7 +71,7 @@ class HomeTests(unittest.TestCase):
             (root / "home" / ".claude").mkdir()
             (root / "home" / ".claude.json").write_text(json.dumps(
                 {"mcpServers": {"a": 1}, "oauthAccount": {"x": 1}}))
-            home = root / "data" / "switchr" / "extra"
+            home = root / "data" / "switchr" / "claude" / "extra"
             home.mkdir(parents=True)
             (home / ".claude.json").write_text(json.dumps({"oauthAccount": {"y": 2}}))
             switchr.prepare_home("claude", home)
@@ -78,7 +82,7 @@ class HomeTests(unittest.TestCase):
         with sandbox() as root:
             (root / "home" / ".claude").mkdir()
             (root / "home" / ".claude.json").write_text('{"mcpServers": {')
-            home = root / "data" / "switchr" / "extra"
+            home = root / "data" / "switchr" / "claude" / "extra"
             home.mkdir(parents=True)
             (home / ".claude.json").write_text(json.dumps({"oauthAccount": {"y": 2}}))
             switchr.prepare_home("claude", home)
@@ -87,12 +91,72 @@ class HomeTests(unittest.TestCase):
     def test_claude_json_main_missing_keeps_home(self):
         with sandbox() as root:
             (root / "home" / ".claude").mkdir()
-            home = root / "data" / "switchr" / "extra"
+            home = root / "data" / "switchr" / "claude" / "extra"
             switchr.prepare_home("claude", home)
             self.assertFalse((home / ".claude.json").exists())
 
 
+    def test_replaced_link_is_set_aside_and_linked_again(self):
+        """An agent that saves a shared file by writing a new one over the link
+        (Claude's settings.json, Codex's config.toml) must not fork it forever."""
+        with sandbox() as root:
+            main = root / "home" / ".claude"
+            main.mkdir(parents=True)
+            (main / "settings.json").write_text('{"shared": true}')
+            (main / "agents").mkdir()
+            home = root / "data" / "switchr" / "claude" / "extra"
+            switchr.prepare_home("claude", home)
+            (home / "settings.json").unlink()
+            (home / "settings.json").write_text('{"forked": true}')
+            (home / "agents").unlink()
+            (home / "agents").mkdir()
+            (home / "agents" / "a.md").write_text("x")
+            (home / ".credentials.json").write_text("own")  # its own, must stay
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                switchr.prepare_home("claude", home)
+            for name in ("settings.json", "agents"):
+                self.assertTrue((home / name).is_symlink(), name)
+                self.assertEqual(os.readlink(home / name), str(main / name))
+            self.assertEqual((main / "settings.json").read_text(), '{"shared": true}')
+            kept = sorted(p.name for p in (home / ".switchr-forked").iterdir())
+            self.assertEqual(len(kept), 2)
+            self.assertTrue(kept[0].startswith("agents."), kept)
+            self.assertTrue(kept[1].startswith("settings.json."), kept)
+            self.assertEqual((home / ".switchr-forked" / kept[1]).read_text(), '{"forked": true}')
+            self.assertEqual((home / ".credentials.json").read_text(), "own")
+            self.assertEqual(stderr.getvalue().count("\n"), 2)  # one line per file set aside
+            self.assertIn("settings.json", stderr.getvalue())
+            # nothing more to set aside the next time
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                switchr.prepare_home("claude", home)
+            self.assertEqual(stderr.getvalue(), "")
+            self.assertEqual(len(list((home / ".switchr-forked").iterdir())), 2)
+
 class LaunchTests(unittest.TestCase):
+    def test_run_prints_a_refusal_instead_of_a_traceback(self):
+        with sandbox() as root:
+            entry = switchr.add("claude", "work")
+            reg = switchr.load_registry()
+            reg["accounts"][0]["home"] = str(root / "home" / ".claude")  # a broken registry
+            switchr.save_registry(reg)
+            with patch.object(switchr.os, "execvpe") as execvpe:
+                with self.assertRaises(SystemExit) as raised:
+                    switchr.run("claude", "work", [])
+            self.assertTrue(str(raised.exception.code).startswith("switchr: refusing"), raised.exception.code)
+            execvpe.assert_not_called()
+
+    def test_run_prints_an_os_error_instead_of_a_traceback(self):
+        with sandbox():
+            switchr.add("claude", "work")
+            with patch.object(switchr, "prepare_home", side_effect=PermissionError("denied")), \
+                    patch.object(switchr.os, "execvpe") as execvpe:
+                with self.assertRaises(SystemExit) as raised:
+                    switchr.run("claude", "work", [])
+            self.assertEqual(raised.exception.code, "switchr: denied")
+            execvpe.assert_not_called()
+
     def test_launch_argv_main_unsets_variable(self):
         with sandbox():
             env, argv = switchr.launch_argv("claude", "main", ["--model", "x"])
@@ -120,7 +184,7 @@ class RealCliTests(unittest.TestCase):
     def test_real_claude_reads_extra_home(self):
         with sandbox() as root:
             (root / "home" / ".claude").mkdir()
-            home = root / "data" / "switchr" / "extra"
+            home = root / "data" / "switchr" / "claude" / "extra"
             switchr.save_registry({"main": {"claude": "main", "codex": "main"},
                                    "accounts": [{"kind": "claude", "name": "t", "home": str(home)}]})
             switchr.prepare_home("claude", home)
