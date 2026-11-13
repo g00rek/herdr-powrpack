@@ -1775,7 +1775,7 @@ class CrashLogTests(unittest.TestCase):
                                 "pressure_full_avg60": 9.9}))
         self.assertFalse(short({}))
 
-    def fall(self, memory, unwell_at=None, how_evidence=None):
+    def fall(self, memory, unwell_at=None):
         with sandboxed_state():
             state = None
             for now, pids in ((self.NOW, [100]), (self.NOW + 10, [100]), (self.NOW + 20, [])):
@@ -1810,11 +1810,65 @@ class CrashLogTests(unittest.TestCase):
             self.assertEqual(self.entries()[0]["how"], "crashed: SIGSEGV")
 
     def test_a_hang_before_the_fall_is_recorded_and_shown(self):
-        entries = self.fall({}, unwell_at=self.NOW + 20 - 130)
-        self.assertEqual(entries[0].get("unanswered_seconds"), 130)
+        entries = self.fall({}, unwell_at=self.NOW + 5)
+        self.assertEqual(entries[0].get("unanswered_seconds"), 15)
         self.assertNotIn("unanswered_seconds", self.fall({}, unwell_at=None)[0])
         self.assertEqual(bridge.unwell_wall_time({"unwell_since": 90.0}, 100.0, 5000.0), 4990.0)
         self.assertIsNone(bridge.unwell_wall_time({"unwell_since": None}, 100.0, 5000.0))
+
+    def test_panel_line_with_the_memory_reason_is_clean(self):
+        import datetime
+        with sandboxed_state():
+            now = datetime.datetime(2026, 11, 13, 18, 0).timestamp()
+            base = {"at": self.at(13, 10, 42), "pid": 1, "kind": "browser",
+                    "memory": {"pressure_full_avg60": 20.0}, "unanswered_seconds": 125}
+            self.write_entries([dict(base, how="ended without a trace while memory was short")])
+            self.assertEqual(bridge.last_down(now),
+                             "Last went down 10:42 — ended without a trace while memory was short.")
+            self.write_entries([dict(base, how="crashed: SIGSEGV")])
+            self.assertEqual(bridge.last_down(now), "Last went down 10:42 — crashed (SIGSEGV).")
+
+    def test_a_corrupt_memory_value_does_not_break_the_printer(self):
+        self.assertFalse(bridge.memory_was_short("lots"))
+        self.assertFalse(bridge.memory_was_short({"pressure_full_avg60": "high",
+                                                  "mem_total_mb": "x", "mem_available_mb": None}))
+        with sandboxed_state():
+            self.write_entries([{"at": self.at(13, 10, 42), "kind": "browser",
+                                 "how": "closed or ended without a trace",
+                                 "memory": "oops", "unanswered_seconds": "soon"}])
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                bridge.print_crashes()
+            self.assertIn("13 Nov 10:42 — closed or ended without a trace", out.getvalue())
+
+    def test_an_outage_does_not_follow_the_browser_to_a_new_pid(self):
+        with sandboxed_state():
+            state = None
+            # pid 100 goes unwell, then is replaced by 200 between two polls
+            # while the health watch still carries the old outage start.
+            plan = ((0, [100], None), (10, [100], self.NOW + 5),
+                    (20, [200], self.NOW + 5), (30, [200], self.NOW + 5),
+                    (40, [], None))
+            for offset, pids, unwell in plan:
+                with patch.object(bridge, "browser_pids", return_value=pids), \
+                        patch.object(bridge, "system_log", fake_system_log()):
+                    state = bridge.crash_step(state, self.NOW + offset, unwell)
+            first, second = self.entries()
+            self.assertEqual(first["pid"], 100)
+            self.assertEqual(first["unanswered_seconds"], 15)
+            self.assertEqual(second["pid"], 200)
+            self.assertNotIn("unanswered_seconds", second)
+
+    def test_a_recovered_outage_is_not_blamed_for_a_later_fall(self):
+        with sandboxed_state():
+            state = None
+            plan = ((0, [100], None), (10, [100], self.NOW), (20, [100], None),
+                    (30, [100], None), (40, [], None))
+            for offset, pids, unwell in plan:
+                with patch.object(bridge, "browser_pids", return_value=pids), \
+                        patch.object(bridge, "system_log", fake_system_log()):
+                    state = bridge.crash_step(state, self.NOW + offset, unwell)
+            self.assertNotIn("unanswered_seconds", self.entries()[0])
 
     def test_lines_stay_short_and_mention_memory_only_when_short(self):
         with sandboxed_state():
@@ -1832,7 +1886,7 @@ class CrashLogTests(unittest.TestCase):
             lines = out.getvalue().splitlines()
             self.assertEqual(lines[0], "13 Nov 10:42 — ended without a trace while memory "
                                        "was short — stopped answering 2 min before")
-            self.assertEqual(lines[1], "13 Nov 10:42 — crashed: SIGSEGV (memory was short)")
+            self.assertEqual(lines[1], "13 Nov 10:42 — crashed: SIGSEGV")
             self.assertEqual(lines[2], "13 Nov 10:42 — closed or ended without a trace")
 
     def write_entries(self, entries):

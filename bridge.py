@@ -1612,9 +1612,15 @@ def memory_snapshot(meminfo=Path("/proc/meminfo"),
 def memory_was_short(memory):
     if not isinstance(memory, dict):
         return False
-    if (memory.get("pressure_full_avg60") or 0) >= MEMORY_SHORT_PRESSURE:
+
+    def number(key):
+        value = memory.get(key)
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    pressure = number("pressure_full_avg60")
+    if pressure is not None and pressure >= MEMORY_SHORT_PRESSURE:
         return True
-    total, available = memory.get("mem_total_mb"), memory.get("mem_available_mb")
+    total, available = number("mem_total_mb"), number("mem_available_mb")
     return bool(total) and available is not None and available < total * MEMORY_SHORT_FREE
 
 
@@ -1686,11 +1692,15 @@ def crash_step(state, now, unwell_at=None):
             "log": log_tail(STATE_DIR / "chromium.log"),
         })
 
+    if current != last:
+        state["pid_since"] = now
+    # The health watch does not know about pids: after a relaunch it can still
+    # report the old outage. One that began before this pid appeared is not its.
+    if unwell_at is not None and unwell_at < (state.get("pid_since") or now):
+        unwell_at = None
     state.update(pid=current, seen_at=now if current else None,
                  pending=pending, seen_dumps=seen,
                  unwell_at=unwell_at if current else None)
-    if current is not None and unwell_at is None:
-        state["unwell_at"] = None
     return state
 
 
@@ -1702,10 +1712,8 @@ def entry_time(entry):
 
 
 def crash_sentence(entry):
-    """One plain line: how it ended, plus what the machine and browser showed."""
+    """One plain line: how it ended, plus how long before it had stopped answering."""
     how = entry.get("how", NO_TRACE)
-    if memory_was_short(entry.get("memory")) and "memory" not in how:
-        how += " (memory was short)"
     seconds = entry.get("unanswered_seconds")
     if isinstance(seconds, (int, float)) and seconds >= 0:
         wait = f"{round(seconds / 60)} min" if seconds >= 90 else (
@@ -1736,8 +1744,6 @@ def last_down(now):
     if now - when.timestamp() > 24 * 3600:
         return None
     how = entry.get("how", NO_TRACE)
-    if memory_was_short(entry.get("memory")) and "memory" not in how:
-        how += " (memory was short)"
     if entry.get("kind") == "tab":
         return f"A tab crashed {when:%H:%M} — {how.removeprefix('tab crashed: ')}."
     if how.startswith("killed: "):

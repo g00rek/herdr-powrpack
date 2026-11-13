@@ -62,5 +62,9 @@ memory and the browser had stopped answering minutes earlier.
   2 min before". The watch loop converts the health watch's start time to wall
   clock and hands it to the crash watch, which remembers it per poll (the
   health watch has already forgotten by the time the browser is gone).
-- Lines stay one short sentence; "(memory was short)" is added only when memory
-  was short and the reason does not already say so.
+- Lines stay one short sentence; the memory note is the reason itself, so no
+  extra text is added (and none when a coredump/OOM cause exists).
+- The snapshot is taken after the browser is gone (up to one poll, 10 s, later),
+  so MemAvailable may already have recovered; `full` avg60 is the reliable
+  signal. An outage start only counts from when the current browser pid first
+  appeared, so a relaunch never inherits the previous browser's outage.
