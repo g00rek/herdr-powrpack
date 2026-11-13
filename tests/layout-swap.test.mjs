@@ -30,3 +30,14 @@ test('a layout without the list reports no change', () => {
 	const { changed } = swapMod({ type: 'block', content: { tab: 'active' } }, 'spacr', 'spaces');
 	assert.equal(changed, 0);
 });
+
+test('switchr swaps only the agents block, and switching back restores it', () => {
+	const { tree: on, changed } = swapMod(tree, 'agents', 'switchr-agents');
+	assert.equal(changed, 1);
+	assert.equal(on.children[1].content.mod, 'switchr-agents');
+	assert.equal(on.children[0].content.mod, 'spacr');
+	assert.deepEqual(on.children[2], tree.children[2]);
+	const { tree: off, changed: back } = swapMod(on, 'switchr-agents', 'agents');
+	assert.equal(back, 1);
+	assert.deepEqual(off, tree);
+});
