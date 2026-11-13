@@ -665,6 +665,10 @@ export default class Powr extends View {
       .child(row("Restart", "restart", "Close the browser and open it again."))
       .when(fix !== null, (el) => el.child(row(fix, "sync", "Match the tab groups to your spaces.")))
       .child(div().pt(6).text_size(12).text_color(t.dim).child(words))
+      // The latest time the browser went down on its own, if within a day:
+      // it comes back by itself, so without this nothing says it happened.
+      .when(Boolean(this.status?.last_down),
+        (el) => el.child(div().text_size(12).text_color(t.dim).child(this.status.last_down)))
       .child(this.section(t, "Settings"))
       .child(this.setting(t, "New spaces", "Turn the browser on for new spaces and worktrees.",
         this.toggle(t, "new-on", shared(NEW_ON) === true,

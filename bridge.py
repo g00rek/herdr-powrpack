@@ -2,10 +2,12 @@
 """Herdr plugin entry point: setup, launch, hooks, and localhost routing."""
 
 import contextlib
+import datetime
 import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -1286,6 +1288,7 @@ def watch_health():
     if not following and not checking:
         return
     state = None
+    crashes = None
     space = app_focused_where()
     next_health = 0.0
     while True:
@@ -1305,6 +1308,10 @@ def watch_health():
                 state = health_step(state, now)
             except Exception as error:
                 print(f"Browsr health watch failed: {error}", file=sys.stderr)
+            try:
+                crashes = crash_step(crashes, time.time())
+            except Exception as error:
+                print(f"Browsr crash log failed: {error}", file=sys.stderr)
         if following:
             space = focus_step(space)
         time.sleep(FOCUS_POLL_SECONDS if following else HEALTH_POLL_SECONDS)
@@ -1340,14 +1347,321 @@ def browser_pids(proc_root=Path("/proc")):
 
 
 def quit_browser():
-    """Ask Browsr to close. Returns how many processes were asked."""
+    """Ask Browsr to close. Returns how many processes were asked.
+
+    Leaves a mark first, so the crash log can tell a stop that was asked for
+    from one that was not.
+    """
     pids = browser_pids()
+    if pids:
+        try:
+            atomic_json(stop_mark_file(), {"at": time.time(), "pids": pids})
+        except OSError:
+            pass
     for pid in pids:
         try:
             os.kill(pid, signal.SIGTERM)
         except OSError:
             pass
     return len(pids)
+
+
+# --- The crash log -------------------------------------------------------
+#
+# The browser "goes down fairly often" and nothing said why: chromium.log was
+# emptied on every launch, so the evidence went the moment Browsr came back.
+# The health watcher now notices the browser going away, asks the system's
+# own logs how it ended, and writes one line per crash.
+
+KEPT_LOGS = 10
+LOG_TAIL_LINES = 40
+DELIBERATE_SECONDS = 30
+# systemd-coredump took 1 min 45 s to record a 60 MB dump of a Browsr tab on
+# this machine, so the browser is long gone before the record of why exists.
+# The entry is written at once and corrected when the evidence turns up.
+EVIDENCE_WAIT_SECONDS = 300
+DUMP_LOOKBACK_SECONDS = 600
+SYSTEM_LOG_TIMEOUT = 3
+NO_TRACE = "closed or ended without a trace"
+COREDUMP_MESSAGE_ID = "fc2e22bc6ee647b6b90729ab34a250b1"
+
+
+def crash_log_file():
+    return STATE_DIR / "crashes.jsonl"
+
+
+def stop_mark_file():
+    return STATE_DIR / "stopping.json"
+
+
+def old_logs_dir():
+    return STATE_DIR / "logs"
+
+
+def system_log(argv):
+    """The one way in to the system's logs: its output, or "" when the tool is
+    missing, refuses, or takes too long. Nothing here may fail the watcher."""
+    try:
+        done = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=SYSTEM_LOG_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return ""
+    return done.stdout or ""
+
+
+def out_of_memory(pid, since):
+    text = system_log([
+        "journalctl", "-k", "-q", "--no-pager", "-o", "cat", "--since", f"@{int(since)}",
+    ])
+    return re.search(rf"Killed process {pid} \(", text) is not None
+
+
+def core_dumps(since):
+    """Dumps systemd-coredump recorded since then: pid, signal, command line."""
+    text = system_log([
+        "journalctl", "--user", "-q", "--no-pager", "-o", "json",
+        "--since", f"@{int(since)}", f"MESSAGE_ID={COREDUMP_MESSAGE_ID}",
+    ])
+    found = []
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+            pid = int(record["COREDUMP_PID"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        cmdline = record.get("COREDUMP_CMDLINE")
+        found.append({
+            "pid": pid,
+            "signal": record.get("COREDUMP_SIGNAL_NAME") or signal_name(record.get("COREDUMP_SIGNAL")),
+            "cmdline": cmdline if isinstance(cmdline, str) else "",
+            "key": f"{pid}@{record.get('COREDUMP_TIMESTAMP', '')}",
+        })
+    return found
+
+
+def signal_name(number):
+    try:
+        return signal.Signals(int(number)).name
+    except (ValueError, TypeError):
+        return f"signal {number}"
+
+
+def dumped_signal(pid, since, dumps):
+    """The signal a process died of, if systemd-coredump recorded it."""
+    for dump in dumps:
+        if dump["pid"] == pid:
+            return dump["signal"]
+    # The journal is where both tools read from, but coredumpctl reads the
+    # system's copy, which survives a user journal that is not kept.
+    text = system_log([
+        "coredumpctl", "--no-pager", "--json=short", "--since", f"@{int(since)}",
+        "list", str(pid),
+    ])
+    try:
+        records = json.loads(text) if text.strip() else []
+    except json.JSONDecodeError:
+        return None
+    for record in records if isinstance(records, list) else []:
+        if isinstance(record, dict) and record.get("pid") == pid:
+            return signal_name(record.get("sig"))
+    return None
+
+
+def how_it_ended(pid, since, dumps):
+    if out_of_memory(pid, since):
+        return "killed: out of memory"
+    found = dumped_signal(pid, since, dumps)
+    return f"crashed: {found}" if found else None
+
+
+def command_fields(cmdline):
+    # coredump quotes the line shell-style: $'/usr/lib/chromium/chromium ...'
+    return [field.strip("$'") for field in cmdline.split()]
+
+
+def our_tab(dump):
+    fields = command_fields(dump["cmdline"])
+    return f"--user-data-dir={PROFILE_DIR}" in fields and "--type=renderer" in fields
+
+
+def log_tail(path, lines=LOG_TAIL_LINES):
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return []
+    return text.splitlines()[-lines:]
+
+
+def newest_old_log():
+    try:
+        logs = sorted(old_logs_dir().glob("chromium-*.log"), key=lambda p: (p.stat().st_mtime, p.name))
+    except OSError:
+        return None
+    return logs[-1] if logs else None
+
+
+def keep_previous_log():
+    """Move the last launch's log aside instead of emptying it; keep ten."""
+    log = STATE_DIR / "chromium.log"
+    try:
+        info = log.stat()
+    except OSError:
+        return
+    if info.st_size == 0:
+        return
+    folder = old_logs_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(info.st_mtime))
+    target = folder / f"chromium-{stamp}.log"
+    count = 1
+    while target.exists():
+        target = folder / f"chromium-{stamp}-{count}.log"
+        count += 1
+    log.replace(target)
+    kept = sorted(folder.glob("chromium-*.log"), key=lambda p: (p.stat().st_mtime, p.name))
+    for old in kept[:-KEPT_LOGS]:
+        old.unlink(missing_ok=True)
+
+
+def read_crashes():
+    try:
+        text = crash_log_file().read_text()
+    except OSError:
+        return []
+    entries = []
+    for line in text.splitlines():
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return entries
+
+
+def write_crash(entry):
+    path = crash_log_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def correct_crash(entry_id, how):
+    entries = read_crashes()
+    for entry in entries:
+        if entry.get("id") == entry_id:
+            entry["how"] = how
+    path = crash_log_file()
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries))
+    temporary.replace(path)
+
+
+def stopped_on_purpose(pid, now):
+    try:
+        mark = json.loads(stop_mark_file().read_text())
+        at = float(mark["at"])
+        pids = mark["pids"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return pid in pids and 0 <= now - at <= DELIBERATE_SECONDS
+
+
+def wall_time(now):
+    return datetime.datetime.fromtimestamp(now).astimezone().isoformat(timespec="seconds")
+
+
+def crash_step(state, now):
+    """Notice the browser going away, or a tab of it crashing, and log why.
+
+    `now` is wall-clock time. `state` remembers the browser pid last seen,
+    entries still waiting for the system to record why, and the dumps
+    already logged.
+    """
+    state = dict(state or {})
+    seen = state.get("seen_dumps")
+    if seen is None:
+        seen = {entry["dump"] for entry in read_crashes() if entry.get("dump")}
+    pids = browser_pids()
+    current = pids[0] if pids else None
+    last = state.get("pid")
+    dumps = core_dumps(now - DUMP_LOOKBACK_SECONDS)
+    pending = []
+    for waiting in state.get("pending", ()):
+        how = how_it_ended(waiting["pid"], waiting["since"], dumps)
+        if how:
+            correct_crash(waiting["id"], how)
+        elif now < waiting["until"]:
+            pending.append(waiting)
+
+    if last is not None and last != current and not stopped_on_purpose(last, now):
+        since = (state.get("seen_at") or now) - 60
+        how = how_it_ended(last, since, dumps)
+        # Relaunched before this poll: that launch moved the log aside.
+        previous = STATE_DIR / "chromium.log" if current is None else newest_old_log()
+        tail = log_tail(previous) if previous else []
+        entry = {
+            "id": uuid.uuid4().hex, "at": wall_time(now), "pid": last,
+            "kind": "browser", "how": how or NO_TRACE, "log": tail,
+        }
+        write_crash(entry)
+        if how is None:
+            pending.append({"id": entry["id"], "pid": last, "since": since,
+                            "until": now + EVIDENCE_WAIT_SECONDS})
+
+    for dump in dumps:
+        if dump["key"] in seen or not our_tab(dump):
+            continue
+        seen.add(dump["key"])
+        write_crash({
+            "id": uuid.uuid4().hex, "at": wall_time(now), "pid": dump["pid"],
+            "kind": "tab", "how": f"tab crashed: {dump['signal']}", "dump": dump["key"],
+            "log": log_tail(STATE_DIR / "chromium.log"),
+        })
+
+    state.update(pid=current, seen_at=now if current else None,
+                 pending=pending, seen_dumps=seen)
+    return state
+
+
+def entry_time(entry):
+    try:
+        return datetime.datetime.fromisoformat(entry["at"]).astimezone()
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def print_crashes():
+    shown = [e for e in read_crashes() if entry_time(e)][-10:]
+    if not shown:
+        print("No crashes recorded.")
+    for entry in shown:
+        when = entry_time(entry)
+        print(f"{when.day} {when:%b %H:%M} — {entry.get('how', NO_TRACE)}")
+    print()
+    print(f"Old browser logs: {old_logs_dir()}")
+    print(f"Crash log: {crash_log_file()}")
+
+
+def last_down(now):
+    """The panel's line about the latest crash, if it was in the last day."""
+    entries = [e for e in read_crashes() if entry_time(e)]
+    if not entries:
+        return None
+    entry = entries[-1]
+    when = entry_time(entry)
+    if now - when.timestamp() > 24 * 3600:
+        return None
+    how = entry.get("how", NO_TRACE)
+    if entry.get("kind") == "tab":
+        return f"A tab crashed {when:%H:%M} — {how.removeprefix('tab crashed: ')}."
+    if how.startswith("killed: "):
+        how = how.removeprefix("killed: ")
+    elif how.startswith("crashed: "):
+        how = f"crashed ({how.removeprefix('crashed: ')})"
+    return f"Last went down {when:%H:%M} — {how}."
 
 
 def extension_is_stale():
@@ -1392,6 +1706,7 @@ def browser_status():
             for workspace in workspaces
         ],
         "strip": strip,
+        "last_down": last_down(time.time()),
     }
 
 
@@ -1427,6 +1742,10 @@ def spawn_browser(chromium):
     # A leftover from an older run can only mislead whoever reads it: with a
     # fixed port Chromium never writes this file again.
     (PROFILE_DIR / "DevToolsActivePort").unlink(missing_ok=True)
+    try:
+        keep_previous_log()
+    except OSError as error:
+        print(f"Browsr could not keep the previous browser log: {error}", file=sys.stderr)
     log = (STATE_DIR / "chromium.log").open("wb", buffering=0)
     subprocess.Popen([
         chromium,
@@ -2051,11 +2370,11 @@ def main():
     if len(sys.argv) != 2 or sys.argv[1] not in {
         "setup", "launch", "restart", "off", "quit", "sync", "adopt", "status",
         "panel", "cleanup", "watch", "hook", "open-link", "workspace-tabs",
-        "mcp-endpoint",
+        "mcp-endpoint", "crashes",
     }:
         raise RuntimeError(
             "Usage: bridge.py setup|launch|restart|off|quit|sync|adopt|status"
-            "|panel|cleanup|watch"
+            "|panel|cleanup|watch|crashes"
             "|hook|open-link|open-url URL|open-tab URL|workspace-tabs|mcp-endpoint"
             "|links on|off|state|handle-link URL"
         )
@@ -2075,6 +2394,7 @@ def main():
         "open-link": open_link,
         "workspace-tabs": workspace_tabs,
         "mcp-endpoint": devtools_endpoint,
+        "crashes": print_crashes,
     }[sys.argv[1]]()
 
 
