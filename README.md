@@ -133,11 +133,31 @@ right-press menu; switching it off puts Herdr's own list back.
   account. The agent is closed and its conversation is resumed on the new
   account in the same terminal. This works only once the agent has finished
   its turn; a busy agent says so and stays where it is.
-- **The badge.** An agent on any account other than main shows that account's
-  name in its row of the Agents list.
+- **The badge.** Only agents on a non-main account get a badge: the account's
+  name in its row of the Agents list. An agent on main shows none.
 
 Every extra account shares instructions, memory, skills, settings and history
 with the main one; only the login is its own. So a moved agent keeps all of it.
+User-wide changes made inside an extra-account session (a new MCP server, a
+trusted folder, a setting changed from inside it) don't stick — make them from
+a main-account session.
+
+Codex moving was tested only with the native Codex binary. A Codex installed
+through npm (a node wrapper) is not recognised yet; moving it then refuses and
+leaves the agent as it is.
+
+**Show the account in Claude Code's status line.** A status line script can
+read `CLAUDE_CONFIG_DIR`: an extra account runs with
+`${XDG_DATA_HOME:-~/.local/share}/switchr/claude/<name>`, and no variable means
+main. This prints the account name (main's label comes from Switchr's
+`accounts.json`):
+
+```bash
+#!/usr/bin/env bash
+data="${XDG_DATA_HOME:-$HOME/.local/share}/switchr"
+if [ -n "$CLAUDE_CONFIG_DIR" ] && [ "$(dirname "$CLAUDE_CONFIG_DIR")" = "$data/claude" ]; then basename "$CLAUDE_CONFIG_DIR"
+else jq -r '.main.claude // "main"' "$data/accounts.json" 2>/dev/null || echo main; fi
+```
 
 The copy of the Agents list is made by the installer from the Agents list of
 the Herdr you have, so run the installer again after a Herdr update to bring the
