@@ -59,28 +59,70 @@ def patch(source):
     return "\n".join(lines)
 
 
-def make_copy(home, herdr_app):
-    """Clone Herdr's agents list as switchr-agents and patch it. One-line result."""
-    target = Path(home) / "mods" / COPY
-    shutil.rmtree(target, ignore_errors=True)
+POLL = 0.2
+WAIT = 10.0
+
+
+def _sizes(target):
+    try:
+        return tuple((target / name).stat().st_size for name in ("main.js", "mod.json"))
+    except OSError:
+        return None
+
+
+def _wait_for_copy(target):
+    """True once main.js and mod.json exist and have stopped changing size."""
+    deadline = time.monotonic() + WAIT
+    last = None
+    while time.monotonic() < deadline:
+        now = _sizes(target)
+        if now is not None and now == last:
+            return True
+        last = now
+        time.sleep(POLL)
+    return False
+
+
+def _build(target, herdr_app):
     cloned = herdr_app("do", "mod.clone", json.dumps({"name": "agents", "as": COPY}))
     if cloned.returncode:
         return f"Badge not added: Herdr would not copy its Agents list ({(cloned.stderr or cloned.stdout).strip()})."
-    for _ in range(50):
-        if (target / "main.js").exists():
-            break
-        time.sleep(0.2)
-    else:
+    if not _wait_for_copy(target):
         return "Badge not added: the copy of Herdr's Agents list did not appear."
     main = target / "main.js"
     try:
         main.write_text(patch(main.read_text()))
     except PatchError as error:
-        shutil.rmtree(target, ignore_errors=True)
         return f"Badge not available with this Herdr version ({error})."
     shutil.copy2(ADDON, target / "switchr.js")
     check = herdr_app("check", str(target))
     if check.returncode:
-        shutil.rmtree(target, ignore_errors=True)
         return f"Badge not added: the patched Agents list did not load ({(check.stdout + check.stderr).strip()})."
-    return "Agents list with account badge installed."
+    return None
+
+
+def make_copy(home, herdr_app):
+    """Clone Herdr's agents list as switchr-agents and patch it.
+
+    Returns (ok, one plain sentence). On ok=False the previous working copy, if
+    there was one, is exactly as it was; no partial folder is left behind. The
+    old copy waits in <home>/switchr-agents.prev (outside mods/) meanwhile.
+    """
+    home = Path(home)
+    target = home / "mods" / COPY
+    aside = home / (COPY + ".prev")
+    shutil.rmtree(aside, ignore_errors=True)
+    had_old = target.exists()
+    if had_old:
+        shutil.move(str(target), str(aside))
+    try:
+        failure = _build(target, herdr_app)
+    except Exception as error:  # herdr-app missing, unreadable or unwritable files, ...
+        failure = f"Badge not added: {error}."
+    if failure is None:
+        shutil.rmtree(aside, ignore_errors=True)
+        return True, "Agents list with account badge installed."
+    shutil.rmtree(target, ignore_errors=True)
+    if had_old:
+        shutil.move(str(aside), str(target))
+    return False, failure
