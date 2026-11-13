@@ -834,7 +834,8 @@ def _is_shell(foreground):
     if not isinstance(foreground, dict):
         return True  # nothing in the foreground
     argv = foreground.get("argv") or [None]
-    return foreground.get("name") in SHELLS or _program(argv[0]) in SHELLS
+    names = (foreground.get("name"), _program(argv[0]))
+    return any(isinstance(n, str) and n.lstrip("-") in SHELLS for n in names)
 
 
 def account_of(pid, kind=None):
@@ -888,29 +889,85 @@ def which():
     return out
 
 
+# Options of the installed CLIs, taken from `claude --help` (Claude Code
+# 2.1.323) and `codex --help` / `codex resume --help` (codex-cli 0.168.0) on
+# 2026-11-13. VALUE takes one value, MANY takes every following word up to the
+# next option, MAYBE takes one optional value (Claude's parser then takes a
+# following word as that value). DROP is removed with its value(s), because
+# it would start or pick another conversation than the one being moved.
+# A word that is no option's value is a prompt (or Codex's `resume [ID]`): it
+# is already in the conversation and is dropped, never sent again.
+CLI_OPTIONS = {
+    "claude": {
+        "VALUE": {"--agent", "--agents", "--append-system-prompt", "--autocompact", "--debug-file",
+                  "--effort", "--environment", "--fallback-model", "--input-format", "--json-schema",
+                  "--max-budget-usd", "--model", "-n", "--name", "--output-format", "--permission-mode",
+                  "--permission-prompts", "--plugin-dir", "--plugin-url",
+                  "--remote-control-session-name-prefix", "--session-id", "--setting-sources",
+                  "--settings", "--system-prompt", "--system-prompt-snapshot"},
+        "MANY": {"--add-dir", "--allowedTools", "--allowed-tools", "--betas", "--disallowedTools",
+                 "--disallowed-tools", "--file", "--mcp-config", "--tools"},
+        "MAYBE": {"--cloud", "-d", "--debug", "--from-pr", "--prompt-suggestions", "--remote-control",
+                  "-r", "--resume", "--teleport", "-w", "--worktree"},
+        "FLAG": {"--allow-dangerously-skip-permissions", "--ax-screen-reader", "--bg", "--background",
+                 "--bare", "--brief", "--chrome", "-c", "--continue", "--dangerously-skip-permissions",
+                 "--desktop", "--disable-slash-commands", "--exclude-dynamic-system-prompt-sections",
+                 "--fork-session", "--forward-subagent-text", "-h", "--help", "--ide",
+                 "--include-hook-events", "--include-partial-messages", "--no-chrome",
+                 "--no-session-persistence", "-p", "--print", "--replay-user-messages", "--restricted",
+                 "--safe-mode", "--strict-mcp-config", "--tmux", "--verbose", "-v", "--version"},
+        "DROP": {"-r", "--resume", "-c", "--continue", "--session-id", "--from-pr", "--fork-session",
+                 "--teleport"},
+    },
+    "codex": {
+        "VALUE": {"-c", "--config", "--enable", "--disable", "--remote", "--remote-auth-token-env",
+                  "-m", "--model", "--local-provider", "-p", "--profile", "-s", "--sandbox",
+                  "-C", "--cd", "--add-dir", "-a", "--ask-for-approval"},
+        "MANY": {"-i", "--image"},
+        "MAYBE": set(),
+        "FLAG": {"--strict-config", "--oss", "--approve-for-me",
+                 "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust",
+                 "--worktree", "--search", "--no-alt-screen", "--no-daemon", "-h", "--help",
+                 "-V", "--version", "--last", "--all", "--include-non-interactive"},
+        "DROP": {"--last", "--all"},
+    },
+}
+
+
 def resume_argv(kind, argv, session):
-    """Arguments to start `kind` again on `session`: the original ones minus any resume."""
+    """Arguments to start `kind` again on `session`: the original options minus
+    any resume and minus prompts. Refuses (SwitchrError) when an unknown option
+    is followed by a word, since that word may be its value or a prompt."""
+    table = CLI_OPTIONS[kind]
     args = list(argv[1:])
     kept = []
-    if kind == "claude":
-        i = 0
-        while i < len(args):
-            arg = args[i]
-            if arg in ("--resume", "-r"):
-                if i + 1 < len(args) and not args[i + 1].startswith("-"):
-                    i += 1  # its session id
-            elif arg.startswith("--resume=") or arg in ("--continue", "-c"):
-                pass
-            else:
-                kept.append(arg)
-            i += 1
-        return [*kept, "--resume", session]
-    if args and args[0] == "resume":
-        args = args[1:]
-        if args and not args[0].startswith("-"):
-            args = args[1:]
-    kept = [a for a in args if a != "--last"]
-    return ["resume", session, *kept]
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if arg == "--":
+            break  # everything after is a prompt
+        if not arg.startswith("-") or arg == "-":
+            continue  # a prompt, or codex's `resume [ID]`
+        name, has_value = arg.split("=", 1)[0], "=" in arg
+        values = []
+        if not has_value:
+            if name in table["VALUE"]:
+                values, i = args[i:i + 1], i + 1
+            elif name in table["MANY"]:
+                while i < len(args) and not args[i].startswith("-"):
+                    values.append(args[i])
+                    i += 1
+            elif name in table["MAYBE"]:
+                if i < len(args) and not args[i].startswith("-"):
+                    values, i = [args[i]], i + 1
+            elif name not in table["FLAG"] and i < len(args) and not args[i].startswith("-"):
+                raise SwitchrError(
+                    f"it was started with {name}, an option Switchr does not know, followed by "
+                    f"{args[i]!r}; Switchr cannot tell whether that is the option's value or a prompt")
+        if name not in table["DROP"]:
+            kept += [arg, *values]
+    return [*kept, "--resume", session] if kind == "claude" else ["resume", session, *kept]
 
 
 def _claude_session_id(pid):
@@ -970,14 +1027,14 @@ def _result(ok, message):
 
 
 def _wait(address, done, seconds):
-    """Poll `hc get` until done(info) is true; the matching info, or None on timeout."""
+    """Poll `hc get` until done(info) is true: (True, info), or (False, last info) on timeout."""
     deadline = _clock() + seconds
     while True:
         info = _hc(["get", address])
         if done(info):
-            return info
+            return True, info
         if _clock() >= deadline:
-            return None
+            return False, info
         _sleep(POLL)
 
 
@@ -1012,15 +1069,22 @@ def move(address, name):
     session = session_of(kind, pid)
     if not session:
         return _result(False, "There is no conversation to carry over yet, so nothing was changed.")
-    line = shlex.join([str(Path(__file__).resolve()), "run", kind, name, "--",
-                       *resume_argv(kind, foreground.get("argv") or [AGENT[kind]], session)])
+    try:
+        args = resume_argv(kind, foreground.get("argv") or [AGENT[kind]], session)
+    except SwitchrError as error:
+        return _result(False, f"Not moved: {error}. Nothing was changed.")
+    line = shlex.join([str(Path(__file__).resolve()), "run", kind, name, "--", *args])
     try:
         _hc(["send", address, QUIT[kind]])
-        info = _wait(address, lambda i: _is_shell(i.get("foreground")), QUIT_WAIT)
+        quit_ok, info = _wait(address, lambda i: _is_shell(i.get("foreground")), QUIT_WAIT)
     except SwitchrError as error:
         return _result(False, f"Could not quit the agent: {error}")
-    if info is None:
-        return _result(False, f"The agent did not quit within {QUIT_WAIT} seconds; nothing was changed.")
+    if not quit_ok:
+        still = info.get("foreground") or {}
+        if agent_kind(still) == kind and still.get("pid") == pid:
+            return _result(False, f"The agent did not quit within {QUIT_WAIT} seconds; nothing was changed.")
+        return _result(False, "The agent quit, but Switchr did not recognise the program now running "
+                              f"in the terminal, so it started nothing. To continue on {name}, run: {line}")
     if info.get("state") == "finished":
         return _result(False, "The terminal closed when the agent quit. To continue on "
                               f"{name}, run in a new terminal: {line}")
@@ -1035,11 +1099,11 @@ def move(address, name):
 
     try:
         _hc(["send", address, line])
-        info = _wait(address, arrived, LAUNCH_WAIT)
+        arrived_ok, _info = _wait(address, arrived, LAUNCH_WAIT)
     except SwitchrError as error:
         return _result(False, f"The agent quit but could not be started again: {error}. "
                               f"To continue, run: {line}")
-    if info is None:
+    if not arrived_ok:
         return _result(False, f"Started on {name}, but could not confirm the same conversation "
                               f"within {LAUNCH_WAIT} seconds; check the terminal.")
     return _result(True, f"Moved to {name}, same conversation.")

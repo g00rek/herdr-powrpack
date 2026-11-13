@@ -63,6 +63,41 @@ class ResumeArgvTests(unittest.TestCase):
             self.assertEqual(switchr.resume_argv("claude", list(argv), "S"),
                              [*kept, "--resume", "S"], argv)
 
+    def test_resume_argv_claude_drops_prompts_keeps_values(self):
+        cases = {
+            ("claude", "--model", "x", "fix X"): ["--model", "x"],
+            ("claude", "fix X", "--add-dir", "d"): ["--add-dir", "d"],
+            ("claude", "--add-dir", "d1", "d2", "--verbose"): ["--add-dir", "d1", "d2", "--verbose"],
+            ("claude", "--model=x", "--resume=abc", "fix X"): ["--model=x"],
+            ("claude", "-n", "work", "--", "fix X"): ["-n", "work"],
+            ("claude", "--session-id", "u", "--from-pr", "12", "--fork-session",
+             "--teleport", "--model", "x"): ["--model", "x"],
+            ("claude", "--from-pr", "--verbose"): ["--verbose"],
+            ("claude", "--some-new-flag"): ["--some-new-flag"],
+            ("claude", "--some-new-flag", "--verbose"): ["--some-new-flag", "--verbose"],
+        }
+        for argv, kept in cases.items():
+            self.assertEqual(switchr.resume_argv("claude", list(argv), "S"),
+                             [*kept, "--resume", "S"], argv)
+
+    def test_resume_argv_refuses_unknown_flag_before_a_word(self):
+        for kind, argv in (("claude", ["claude", "--some-new-flag", "thing"]),
+                           ("codex", ["codex", "--some-new-flag", "thing"])):
+            with self.assertRaises(switchr.SwitchrError, msg=argv):
+                switchr.resume_argv(kind, argv, "S")
+
+    def test_resume_argv_codex_drops_prompts_keeps_values(self):
+        self.assertEqual(switchr.resume_argv("codex", ["codex", "do Y"], "S"), ["resume", "S"])
+        self.assertEqual(
+            switchr.resume_argv("codex", ["codex", "-m", "x", "--no-daemon", "resume", "old", "do Y"], "S"),
+            ["resume", "S", "-m", "x", "--no-daemon"])
+        self.assertEqual(
+            switchr.resume_argv("codex", ["codex", "--add-dir", "d", "-c", "k=v", "do Y"], "S"),
+            ["resume", "S", "--add-dir", "d", "-c", "k=v"])
+        self.assertEqual(
+            switchr.resume_argv("codex", ["codex", "-i", "a.png", "b.png", "--search", "resume", "--last"], "S"),
+            ["resume", "S", "-i", "a.png", "b.png", "--search"])
+
     def test_resume_argv_codex(self):
         self.assertEqual(switchr.resume_argv("codex", ["codex", "resume", "old", "--no-daemon"], "S"),
                          ["resume", "S", "--no-daemon"])
@@ -213,6 +248,34 @@ class MoveTests(unittest.TestCase):
             launch = shlex.join([SCRIPT, "run", "claude", "bonus", "--",
                                  "--dangerously-skip-permissions", "--resume", SESSION])
             self.assertEqual(hc.sends(), [["send", "t1", "/exit"], ["send", "t1", launch]])
+
+    def test_move_refuses_unknown_flag_before_a_word(self):
+        with sandbox():
+            self.confirm_bonus()
+            hc = FakeHc([terminal(100, argv=["claude", "--some-new-flag", "thing"])])
+            result = self.run_move(hc, {})
+            self.assertFalse(result["ok"])
+            self.assertIn("--some-new-flag", result["message"])
+            self.assertEqual(hc.sends(), [])
+
+    def test_move_accepts_login_shell(self):
+        with sandbox():
+            self.confirm_bonus()
+            hc = FakeHc([terminal(100), terminal(50, name="-bash", argv=["-bash"]), terminal(200)])
+            self.assertTrue(self.run_move(hc, {200: "bonus"})["ok"])
+            self.assertEqual(len(hc.sends()), 2)
+
+    def test_move_reports_unrecognised_shell(self):
+        with sandbox():
+            self.confirm_bonus()
+            hc = FakeHc([terminal(100), terminal(50, name="nu", argv=["/usr/bin/nu"])])
+            result = self.run_move(hc, {})
+            self.assertFalse(result["ok"])
+            self.assertIn("quit", result["message"])
+            self.assertNotIn("nothing was changed", result["message"])
+            self.assertIn(shlex.join([SCRIPT, "run", "claude", "bonus", "--", "--resume", SESSION]),
+                          result["message"])
+            self.assertEqual(hc.sends(), [["send", "t1", "/exit"]])
 
     def test_move_waits_for_the_same_conversation(self):
         with sandbox():
