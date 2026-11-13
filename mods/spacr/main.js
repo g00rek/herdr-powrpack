@@ -122,9 +122,13 @@ const MODULES = "powr.modules";
 // the one its list puts beside a worktree.
 const BRANCH_ICON = "branch";
 
-// A project name's line, px. A branch's icon and the rule's stub both sit on
-// its middle, so they meet the name whether or not a line follows it.
-const NAME_LINE = 20;
+// What a project wears until someone picks otherwise: a terminal, which is
+// what a space is. One shape from the same family as every other row, where a
+// letter looked like a mark nobody had finished.
+const PROJECT_ICON = "square-terminal";
+
+// One row of the list, px: every project, branch and folder is this tall.
+const ROW = 28;
 
 // Browsr's own command, for the one thing this list changes that lives
 // outside Herdr. Change this line if your checkout is elsewhere.
@@ -235,7 +239,7 @@ export default class PowrSpaces extends View {
 
 	/** The folder background's strength, as hex alpha; null for none. Set in Powr. */
 	wash() {
-		const strength = { none: null, light: "14", medium: "22", strong: "38" };
+		const strength = { none: null, light: "08", medium: "12", strong: "1f" };
 		const chosen = shared("spacr.wash");
 		return chosen in strength ? strength[chosen] : strength.medium;
 	}
@@ -441,7 +445,7 @@ export default class PowrSpaces extends View {
 
 	/** What a row wears: its pick, else Herdr's branch mark for a branch. */
 	iconOf(space, from) {
-		return this.pickedIcon(space) || (from ? BRANCH_ICON : null);
+		return this.pickedIcon(space) || (from ? BRANCH_ICON : PROJECT_ICON);
 	}
 
 	/** Put every branch back on the branch mark. */
@@ -471,6 +475,13 @@ export default class PowrSpaces extends View {
 		else delete next[id];
 		setShared(HERDR_COLORS, next);
 		cx.notify();
+	}
+
+	/** The colour someone picked for a project, or null when none was. */
+	chosenColor(space) {
+		const stored = shared(HERDR_COLORS);
+		const named = stored && typeof stored === "object" ? stored[space.id] : null;
+		return named ? paint(named) : null;
 	}
 
 	colorOf(space, from) {
@@ -628,20 +639,29 @@ export default class PowrSpaces extends View {
 
 	// ---- drawing ------------------------------------------------------
 
-	row(t, space, inFront, mark, from) {
+	/**
+	 * One project or branch. `folder` is the folder it sits in, or null when
+	 * it is loose. Colour belongs to the top of the tree: a folder wears its
+	 * own, a loose project the one picked for it (grey until one is), and
+	 * everything inside either is grey.
+	 */
+	row(t, space, inFront, mark, from, folder = null) {
+		const hue = !from && !folder ? this.chosenColor(space) : null;
 		const on = this.browsers()[space.id] === true;
-		const letter = (space.name || "?").trim().charAt(0).toUpperCase() || "?";
 		const icon = this.iconOf(space, from);
+		// A loose project stands at the top of the tree beside the folders, so
+		// its glyph lines up with theirs, past the space their arrows take.
+		const top = !from && !folder;
 		const landing = this.over && this.over.kind === "space" && this.over.id === space.id;
 		const lifted = this.pressed === space.id;
 		return h_flex()
 			.id(`powr-space-${space.id}`)
-			// A branch lines up with its name, the line the rule points at;
-			// a project's larger tile sits in the middle of its two lines.
-			.when(!from, (el) => el.items_center().px(8))
-			.when(Boolean(from), (el) => el.items_start().pl(2).pr(8))
+			// Every row one line and one height, the way a sidebar is drawn:
+			// a branch name sits beside the project's, not under it.
+			.h(ROW)
+			.items_center()
+			.pl(top ? 26 : 8).pr(8)
 			.gap(8)
-			.py(4)
 			.rounded(6)
 			.cursor_pointer()
 			.when(inFront, (el) => el.bg(t.selected))
@@ -649,6 +669,14 @@ export default class PowrSpaces extends View {
 			// Where it would land, drawn on the row it would land on.
 			.when(landing, (el) => el.border_t_2().border_color(t.accent))
 			.hover((s) => s.bg(t.hover))
+			// Which row the pointer is on, so a project without a browser shows
+			// the switch for one only there.
+			.on_hover((hovered, cx) => {
+				if (hovered) this.pointed = space.id;
+				else if (this.pointed === space.id) this.pointed = null;
+				else return;
+				cx.notify();
+			})
 			.on_mouse_down("left", (_event, cx) => {
 				this.pressed = space.id;
 				cx.notify();
@@ -673,17 +701,14 @@ export default class PowrSpaces extends View {
 					props: { tab: "space", target: { id: space.id } },
 				});
 			})
-			// A project's tile is filled; a branch beside it shows only its
-			// icon, in the project's colour, with no tile around it — as
-			// Herdr's own list draws a worktree.
+			// A drawing alone, no tile behind it, grey unless it is a loose
+			// project with a colour of its own (see above).
 			.child(
 				h_flex()
 					.id(`powr-tile-${space.id}`)
-					// A project's tile is as large as a folder's icon, so the two
-					// stand in one column; a branch's stays small under it.
-					.w(from ? 18 : 22).h(from ? NAME_LINE : 22)
+					// The same slot as a folder's glyph, so they stand in one column.
+					.size(16)
 					.flex_none()
-					.rounded(from ? 5 : 6)
 					.items_center()
 					.justify_center()
 					.cursor_pointer()
@@ -693,31 +718,28 @@ export default class PowrSpaces extends View {
 					// not caught at all: it selects, like anywhere on the row.
 					.on_mouse_down("right", (_event, cx) => {
 						cx.stop_propagation();
-						this.openLook(space.id, from?.name ?? null);
+						this.openLook(space.id, from?.name ?? null, Boolean(from || folder));
 					})
-					.when(!from, (el) => el.bg(this.colorOf(space, null)))
-					.child(icon
-						? svg(`mods/spacr/icons/${icon}.svg`).size(from ? 13 : 14)
-							.text_color(from ? this.colorOf(space, from) : "#ffffff")
-						: div().text_size(from ? 11 : 13)
-							.text_color(from ? this.colorOf(space, from) : "#ffffff")
-							.child(letter))
+					.child(svg(`mods/spacr/icons/${icon}.svg`).size(from ? 13 : 16)
+						.text_color(hue ?? (inFront ? t.foreground : t.dim)))
 			)
 			.child(
-				v_flex()
+				h_flex()
 					.flex_1()
 					.min_w(0)
-					.child(div().truncate().line_height(`${NAME_LINE}px`).text_color(t.foreground).child(space.name))
+					.items_center()
+					.gap(8)
+					.child(div().flex_none().text_color(t.foreground).child(space.name))
 					.when(Boolean(space.branch) && !TRUNK.has(space.branch)
 						&& space.branch !== space.name, (el) =>
-						el.child(div().truncate().text_size(10.5).text_color(t.dim).child(space.branch)))
+						el.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(space.branch)))
 			)
 			.when(Boolean(space.status), (el) =>
 				el.child(div().flex_none().text_color(t[space.status] ?? t.dim).child(glyph(space.status))))
-			// The browser mark. Lit when this project has a group of tabs of its
-			// own, barely there when it has not, and a press is the switch — the
-			// whole reason this list is ours.
-			.when(this.browsrOn(), (el) => el.child(
+			// The browser mark, a globe. There when this project has a group of
+			// tabs of its own; without one it shows only under the pointer, as
+			// the switch to give it one. A press is the switch either way.
+			.when(this.browsrOn() && (on || this.pointed === space.id), (el) => el.child(
 				h_flex()
 					.id(`powr-browser-${space.id}`)
 					.size(20)
@@ -733,56 +755,50 @@ export default class PowrSpaces extends View {
 						cx.stop_propagation();
 						this.toggleBrowser(space.id, cx);
 					})
-					// As bright as a name and no brighter. In the accent colour
-					// it was the loudest thing on the row, and it is the least
-					// important thing on it.
-					.child(svg("mods/spacr/browser.svg").size(13)
-						.text_color(on ? t.foreground : t.border))
+					// Quieter than a name. In the accent colour it was the
+					// loudest thing on the row, and it is the least important
+					// thing on it.
+					.child(svg("mods/spacr/icons/globe.svg").size(13)
+						.text_color(on ? t.dim : t.border))
 			));
 	}
 
 	/**
 	 * A project and the branches checked out beside it, as one group.
 	 *
-	 * Drawn as a line down the side rather than an elbow character per row.
-	 * The characters sat in the gaps between rows and never joined up, so at
-	 * this size the structure was barely there; a rule in the family's own
-	 * colour says it in one stroke.
+	 * Its branches hang under it, on the same faint guide as a folder's
+	 * projects.
 	 */
-	group(t, { space, kids }, here, indent) {
-		const block = v_flex().gap(1).child(this.row(t, space, space.id === here, null));
+	group(t, { space, kids }, here, indent, folder = null) {
+		const block = v_flex().gap(0).child(this.row(t, space, space.id === here, null, undefined, folder));
 		if (!kids.length) return block;
+		// A loose project's row starts 18 further in than a nested one's.
 		return block.child(this.branches(t, kids.map((kid) =>
-			this.row(t, kid, kid.id === here, null, space)), this.colorOf(space, null),
-			indent, 4 + NAME_LINE / 2));
+			this.row(t, kid, kid.id === here, null, space, folder)), folder ? 0 : 18));
 	}
 
 	/**
-	 * Rows hung off the one above them by a rule: a line down from its tile
-	 * and a short stub into each row. The same drawing for a project's
-	 * branches and for the projects in a folder, so the whole list reads as
-	 * one tree.
+	 * Rows hung off the one above them by a guide: one faint line down their
+	 * left side, the way a sidebar's outline draws it; the indent does the
+	 * grouping and the guide only follows it. The
+	 * same drawing for a project's branches and for the projects in a folder,
+	 * so the whole list reads as one tree.
 	 *
-	 * Each row draws its own piece of the rule rather than one line down the
-	 * whole side: that one ran past the last row and pointed at whatever came
-	 * next. Here the last row's piece stops at its own stub, which is what an
-	 * elbow is. No gap between the rows either, or the pieces would not meet.
-	 * `reach` is how far down a row its stub sits: the middle of its tile.
+	 * A guide and not an elbow per row: with stubs, lines, tiles and a wash
+	 * all on one row the structure was louder than the names in it. Each row
+	 * draws its own piece, with no gap between rows, so the pieces meet.
 	 */
-	branches(t, rows, line, indent, reach) {
-		const nest = v_flex().gap(0).ml(indent + 17);
-		rows.forEach((child, n) => {
-			const last = n === rows.length - 1;
+	branches(t, rows, indent) {
+		const guide = t.border;
+		// The guide runs under the glyph of the row these hang from: its row
+		// starts `indent` further in than a nested one, whose glyph's middle
+		// is 16 in.
+		const nest = v_flex().gap(0).ml(indent + 15);
+		rows.forEach((child) => {
 			nest.child(
 				h_flex().items_stretch()
-					.child(
-						v_flex().w(17).flex_none().items_start()
-							.child(div().w(1).h(reach).flex_none().bg(line))
-							.child(div().w(17).h(1).flex_none().bg(line))
-							.child(last
-								? div().w(1).flex_1()
-								: div().w(1).flex_1().bg(line))
-					)
+					.child(v_flex().w(1).flex_none().items_start()
+						.child(div().w(1).flex_1().bg(guide)))
 					.child(div().flex_1().min_w(0).child(child))
 			);
 		});
@@ -795,9 +811,9 @@ export default class PowrSpaces extends View {
 		const head = h_flex()
 			.id(`powr-folder-${folder.id}`)
 			.items_center()
-			.gap(8)
+			.gap(6)
 			.px(8)
-			.py(4)
+			.h(ROW + 2)
 			.rounded(6)
 			.cursor_pointer()
 			.when(landing, (el) => el.bg(t.hover).border_1().border_color(t.accent))
@@ -823,17 +839,19 @@ export default class PowrSpaces extends View {
 					props: { role: "folder", id: folder.id },
 				});
 			})
+			// Its arrow first, the way an outline shows what opens.
+			.child(svg(`mods/spacr/chevron-${folder.folded ? "right" : "down"}.svg`)
+				.size(11).flex_none().text_color(t.dim))
 			.child(
-				// A tile like a project's, so the tree has one shape at every
-				// level, but a faint one: the projects in it are read first.
-			h_flex()
+				// The folder's colour lives on its drawing, with nothing behind
+				// it; the slot is a project's, so the two line up.
+				h_flex()
 					.id(`powr-folder-tile-${folder.id}`)
-					.size(22).flex_none().rounded(6).items_center().justify_center()
+					.size(16).flex_none().mx(1).items_center().justify_center()
 					.cursor_pointer()
-					.when(/^#[0-9a-f]{6}$/i.test(tint), (el) => el.bg(`${tint}40`))
 					.child(svg(folder.icon
 						? `mods/spacr/icons/${folder.icon}.svg`
-						: "mods/spacr/folder.svg").size(14).text_color(tint))
+						: "mods/spacr/folder.svg").size(16).text_color(tint))
 			);
 
 		if (this.editing === folder.id) {
@@ -846,10 +864,8 @@ export default class PowrSpaces extends View {
 			);
 		} else {
 			head
-				.child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(folder.name))
-				.child(div().flex_none().text_size(11).text_color(t.dim).child(String(inside.length)))
-				.child(svg(`mods/spacr/chevron-${folder.folded ? "right" : "down"}.svg`)
-					.size(11).flex_none().text_color(t.dim));
+				.child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(folder.name))
+				.child(div().flex_none().text_size(11).text_color(t.dim).child(String(inside.length)));
 		}
 		return head;
 	}
@@ -877,11 +893,11 @@ export default class PowrSpaces extends View {
 	 * moved under the list to stop that — opened somewhere far from the row
 	 * it was about.
 	 */
-	openLook(id, from) {
+	openLook(id, from, grey) {
 		openOverlay({
 			mod: "spacr", kind: "popup", width: 264,
-			height: 30 + (from ? 26 : SWATCH_HEIGHT) + 36 + GRID_HEIGHT + 14,
-			props: { role: "look", id, from },
+			height: 30 + (grey ? 0 : SWATCH_HEIGHT + 4) + 32 + GRID_HEIGHT + 14,
+			props: { role: "look", id, from, grey },
 		});
 	}
 
@@ -972,17 +988,13 @@ export default class PowrSpaces extends View {
 	spaceControls(t, space) {
 		const stored = shared(HERDR_COLORS);
 		const color = (stored && typeof stored === "object" ? stored[space.id] : null) ?? null;
-		// A branch takes its project's colour, so offering it a colour of its
-		// own would be offering something that does nothing. It says where the
-		// colour comes from instead, which is the answer to the question
-		// anyone opening this was about to ask.
+		// Only the top of the tree wears a colour, so a branch or a project
+		// inside a folder is offered glyphs alone.
 		const from = props()?.from ?? null;
+		const grey = props()?.grey ?? Boolean(from);
 		return this.box(t, space.name, [
-			from
-				? div().text_size(11).text_color(t.dim).px(8).py(4)
-					.child(`colour comes from ${from}`)
-				: this.swatches(t, { key: `sp-${space.id}`, color },
-					(pick, cx) => this.paintSpace(space.id, pick, cx)),
+			...(grey ? [] : [this.swatches(t, { key: `sp-${space.id}`, color },
+				(pick, cx) => this.paintSpace(space.id, pick, cx))]),
 			h_flex().h(28).mx(4).px(6).items_center().rounded(6)
 				.border_1().border_color(t.border)
 				.child(Input.new(this.search).h_full().text_size(12).text_color(t.foreground)),
@@ -991,13 +1003,14 @@ export default class PowrSpaces extends View {
 				: this.glyphs(t, {
 				key: `sp-${space.id}`,
 				scroll: GRID_HEIGHT,
-				// A branch's first choice is the branch mark it wears unpicked;
-				// a project's is its own letter.
+				// The first choice is what it wears unpicked: the branch mark,
+				// or a project's terminal.
 				names: this.query ? this.matches(this.query)
-					: from ? [BRANCH_ICON, ...SPACE_ICONS] : SPACE_ICONS,
+					: [from ? BRANCH_ICON : PROJECT_ICON,
+						...SPACE_ICONS.filter((name) => name !== PROJECT_ICON)],
 				chosen: this.pickedIcon(space),
-				plain: from ? BRANCH_ICON : null,
-				letter: from ? null : (space.name || "?").trim().charAt(0).toUpperCase() || "?",
+				plain: from ? BRANCH_ICON : PROJECT_ICON,
+				letter: null,
 				tint: t.foreground,
 				pick: (name, cx) => this.wearSpaceIcon(space.id, name, cx),
 			}),
@@ -1110,8 +1123,8 @@ export default class PowrSpaces extends View {
 			if (!folder.folded && inside.length) {
 				// Its projects hang off its tile by the same rule a project's
 				// branches hang off the project, in the folder's colour.
-				card.child(this.branches(t, inside.map((node) => this.group(t, node, here, 0)),
-					tint, 0, 4 + 11).pb(2));
+				card.child(this.branches(t, inside.map((node) =>
+					this.group(t, node, here, 0, { name: folder.name, tint })), 18).pb(2));
 			}
 			body.child(card);
 		}
