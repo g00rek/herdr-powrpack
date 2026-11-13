@@ -1611,10 +1611,20 @@ def dump_record(pid, signal_name, cmdline):
     }
 
 
+REAL_MEMORY_SNAPSHOT = bridge.memory_snapshot
+
+
 class CrashLogTests(unittest.TestCase):
     """Browsr's browser goes down and nothing used to say why."""
 
     NOW = 1794563000.0  # 13 Nov 2026, late morning in Europe
+
+    def setUp(self):
+        # Never read the real machine's memory: the verdicts would then depend
+        # on how loaded the machine running the tests happens to be.
+        patcher = patch.object(bridge, "memory_snapshot", return_value={})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def run_watch(self, polls, system_log):
         """Feed crash_step a sequence of browser pid lists, ten seconds apart."""
@@ -1742,6 +1752,88 @@ class CrashLogTests(unittest.TestCase):
                         state = bridge.crash_step(state, now)
                 self.assertEqual([e["how"] for e in self.entries()],
                                  ["closed or ended without a trace"])
+
+    def test_memory_snapshot_reads_the_two_files_and_survives_missing_ones(self):
+        with sandboxed_state() as root:
+            info, psi = root / "meminfo", root / "psi"
+            info.write_text("MemTotal: 32768000 kB\nMemAvailable: 1024000 kB\n"
+                            "SwapTotal: 40960000 kB\nSwapFree: 12288000 kB\n")
+            psi.write_text("some avg10=1.00 avg60=14.50 avg300=3.00 total=1\n"
+                           "full avg10=0.00 avg60=11.25 avg300=1.00 total=1\n")
+            snap = REAL_MEMORY_SNAPSHOT(info, psi)
+            self.assertEqual(snap, {"mem_total_mb": 32000, "mem_available_mb": 1000,
+                                    "swap_used_mb": 28000, "pressure_some_avg60": 14.5,
+                                    "pressure_full_avg60": 11.25})
+            self.assertEqual(REAL_MEMORY_SNAPSHOT(root / "no", root / "none"), {})
+            self.assertEqual(REAL_MEMORY_SNAPSHOT(info, root / "none")["mem_total_mb"], 32000)
+
+    def test_memory_shortness(self):
+        short = bridge.memory_was_short
+        self.assertTrue(short({"pressure_full_avg60": 10.0}))
+        self.assertTrue(short({"mem_total_mb": 32000, "mem_available_mb": 1500}))
+        self.assertFalse(short({"mem_total_mb": 32000, "mem_available_mb": 1700,
+                                "pressure_full_avg60": 9.9}))
+        self.assertFalse(short({}))
+
+    def fall(self, memory, unwell_at=None, how_evidence=None):
+        with sandboxed_state():
+            state = None
+            for now, pids in ((self.NOW, [100]), (self.NOW + 10, [100]), (self.NOW + 20, [])):
+                with patch.object(bridge, "browser_pids", return_value=pids), \
+                        patch.object(bridge, "system_log", fake_system_log()), \
+                        patch.object(bridge, "memory_snapshot", return_value=memory):
+                    state = bridge.crash_step(state, now, unwell_at if pids else None)
+            return self.entries()
+
+    def test_no_trace_with_short_memory_says_so(self):
+        entries = self.fall({"mem_total_mb": 32000, "mem_available_mb": 800})
+        self.assertEqual(entries[0]["how"], "ended without a trace while memory was short")
+        self.assertEqual(entries[0]["memory"]["mem_available_mb"], 800)
+        entries = self.fall({"mem_total_mb": 32000, "mem_available_mb": 9000})
+        self.assertEqual(entries[0]["how"], "closed or ended without a trace")
+
+    def test_a_coredump_still_beats_the_memory_guess(self):
+        with sandboxed_state() as root:
+            cmdline = f"$'/usr/lib/chromium/chromium --user-data-dir={root / 'profile'} --no-first-run'"
+            state = None
+            for now, pids in ((self.NOW, [100]), (self.NOW + 10, [])):
+                with patch.object(bridge, "browser_pids", return_value=pids), \
+                        patch.object(bridge, "system_log", fake_system_log()), \
+                        patch.object(bridge, "memory_snapshot",
+                                     return_value={"pressure_full_avg60": 30.0}):
+                    state = bridge.crash_step(state, now)
+            self.assertEqual(self.entries()[0]["how"], "ended without a trace while memory was short")
+            with patch.object(bridge, "browser_pids", return_value=[]), \
+                    patch.object(bridge, "system_log", fake_system_log(
+                        journal=[dump_record(100, "SIGSEGV", cmdline)])):
+                bridge.crash_step(state, self.NOW + 60)
+            self.assertEqual(self.entries()[0]["how"], "crashed: SIGSEGV")
+
+    def test_a_hang_before_the_fall_is_recorded_and_shown(self):
+        entries = self.fall({}, unwell_at=self.NOW + 20 - 130)
+        self.assertEqual(entries[0].get("unanswered_seconds"), 130)
+        self.assertNotIn("unanswered_seconds", self.fall({}, unwell_at=None)[0])
+        self.assertEqual(bridge.unwell_wall_time({"unwell_since": 90.0}, 100.0, 5000.0), 4990.0)
+        self.assertIsNone(bridge.unwell_wall_time({"unwell_since": None}, 100.0, 5000.0))
+
+    def test_lines_stay_short_and_mention_memory_only_when_short(self):
+        with sandboxed_state():
+            base = {"at": self.at(13, 10, 42), "pid": 1, "kind": "browser"}
+            self.write_entries([
+                dict(base, how="ended without a trace while memory was short",
+                     memory={"pressure_full_avg60": 20.0}, unanswered_seconds=125),
+                dict(base, how="crashed: SIGSEGV", memory={"pressure_full_avg60": 20.0}),
+                dict(base, how="closed or ended without a trace",
+                     memory={"mem_total_mb": 32000, "mem_available_mb": 20000}),
+            ])
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                bridge.print_crashes()
+            lines = out.getvalue().splitlines()
+            self.assertEqual(lines[0], "13 Nov 10:42 — ended without a trace while memory "
+                                       "was short — stopped answering 2 min before")
+            self.assertEqual(lines[1], "13 Nov 10:42 — crashed: SIGSEGV (memory was short)")
+            self.assertEqual(lines[2], "13 Nov 10:42 — closed or ended without a trace")
 
     def write_entries(self, entries):
         bridge.crash_log_file().write_text(

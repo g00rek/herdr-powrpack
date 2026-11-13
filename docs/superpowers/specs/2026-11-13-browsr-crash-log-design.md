@@ -44,3 +44,23 @@ is gone the moment Browsr comes back.
 The exact JSON field names, how the pid of the running browser is remembered
 between polls, and how the panel line is fetched (a `bridge.py --app status`
 field is the obvious place).
+
+## Follow-up: falls with no trace (2026-11-13)
+
+A fall on 12 Nov left no kernel kill and no core dump; the machine was short of
+memory and the browser had stopped answering minutes earlier.
+
+- Every browser entry carries a memory snapshot taken when the disappearance is
+  seen (`memory`: MemAvailable, MemTotal, swap used in MB; `some`/`full` avg60
+  from `/proc/pressure/memory`; missing files leave the fields out). Read
+  through one seam, `memory_snapshot`.
+- No-trace + memory short (`full` avg60 >= 10, or MemAvailable < 5% of
+  MemTotal) is logged as "ended without a trace while memory was short". A
+  later coredump/OOM record still overwrites it.
+- If the browser had stopped answering while still alive, the entry records
+  `unanswered_seconds`, and `bridge.py crashes` appends "— stopped answering
+  2 min before". The watch loop converts the health watch's start time to wall
+  clock and hands it to the crash watch, which remembers it per poll (the
+  health watch has already forgotten by the time the browser is gone).
+- Lines stay one short sentence; "(memory was short)" is added only when memory
+  was short and the reason does not already say so.
