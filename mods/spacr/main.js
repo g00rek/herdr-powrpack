@@ -235,7 +235,7 @@ export default class PowrSpaces extends View {
 
 	/** The folder background's strength, as hex alpha; null for none. Set in Powr. */
 	wash() {
-		const strength = { none: null, light: "14", medium: "22", strong: "38" };
+		const strength = { none: null, light: "08", medium: "12", strong: "1f" };
 		const chosen = shared("spacr.wash");
 		return chosen in strength ? strength[chosen] : strength.medium;
 	}
@@ -673,9 +673,9 @@ export default class PowrSpaces extends View {
 					props: { tab: "space", target: { id: space.id } },
 				});
 			})
-			// A project's tile is filled; a branch beside it shows only its
-			// icon, in the project's colour, with no tile around it — as
-			// Herdr's own list draws a worktree.
+			// A drawing alone, no tile behind it: the folder carries the colour,
+			// so a project's mark stays grey and the one in front is the only
+			// bright one on the list.
 			.child(
 				h_flex()
 					.id(`powr-tile-${space.id}`)
@@ -695,12 +695,11 @@ export default class PowrSpaces extends View {
 						cx.stop_propagation();
 						this.openLook(space.id, from?.name ?? null);
 					})
-					.when(!from, (el) => el.bg(this.colorOf(space, null)))
 					.child(icon
-						? svg(`mods/spacr/icons/${icon}.svg`).size(from ? 13 : 14)
-							.text_color(from ? this.colorOf(space, from) : "#ffffff")
+						? svg(`mods/spacr/icons/${icon}.svg`).size(from ? 13 : 16)
+							.text_color(inFront ? t.foreground : t.dim)
 						: div().text_size(from ? 11 : 13)
-							.text_color(from ? this.colorOf(space, from) : "#ffffff")
+							.text_color(inFront ? t.foreground : t.dim)
 							.child(letter))
 			)
 			.child(
@@ -733,11 +732,11 @@ export default class PowrSpaces extends View {
 						cx.stop_propagation();
 						this.toggleBrowser(space.id, cx);
 					})
-					// As bright as a name and no brighter. In the accent colour
-					// it was the loudest thing on the row, and it is the least
-					// important thing on it.
+					// Quieter than a name. In the accent colour it was the
+					// loudest thing on the row, and it is the least important
+					// thing on it.
 					.child(svg("mods/spacr/browser.svg").size(13)
-						.text_color(on ? t.foreground : t.border))
+						.text_color(on ? t.dim : t.border))
 			));
 	}
 
@@ -754,35 +753,27 @@ export default class PowrSpaces extends View {
 		if (!kids.length) return block;
 		return block.child(this.branches(t, kids.map((kid) =>
 			this.row(t, kid, kid.id === here, null, space)), this.colorOf(space, null),
-			indent, 4 + NAME_LINE / 2));
+			indent));
 	}
 
 	/**
-	 * Rows hung off the one above them by a rule: a line down from its tile
-	 * and a short stub into each row. The same drawing for a project's
-	 * branches and for the projects in a folder, so the whole list reads as
-	 * one tree.
+	 * Rows hung off the one above them by a guide: one thin line down their
+	 * left side, in the family's colour at a fraction of its strength. The
+	 * same drawing for a project's branches and for the projects in a folder,
+	 * so the whole list reads as one tree.
 	 *
-	 * Each row draws its own piece of the rule rather than one line down the
-	 * whole side: that one ran past the last row and pointed at whatever came
-	 * next. Here the last row's piece stops at its own stub, which is what an
-	 * elbow is. No gap between the rows either, or the pieces would not meet.
-	 * `reach` is how far down a row its stub sits: the middle of its tile.
+	 * A guide and not an elbow per row: with stubs, lines, tiles and a wash
+	 * all on one row the structure was louder than the names in it. Each row
+	 * draws its own piece, with no gap between rows, so the pieces meet.
 	 */
-	branches(t, rows, line, indent, reach) {
+	branches(t, rows, line, indent) {
+		const guide = /^#[0-9a-f]{6}$/i.test(line) ? `${line}66` : line;
 		const nest = v_flex().gap(0).ml(indent + 17);
-		rows.forEach((child, n) => {
-			const last = n === rows.length - 1;
+		rows.forEach((child) => {
 			nest.child(
 				h_flex().items_stretch()
-					.child(
-						v_flex().w(17).flex_none().items_start()
-							.child(div().w(1).h(reach).flex_none().bg(line))
-							.child(div().w(17).h(1).flex_none().bg(line))
-							.child(last
-								? div().w(1).flex_1()
-								: div().w(1).flex_1().bg(line))
-					)
+					.child(v_flex().w(17).flex_none().items_start()
+						.child(div().w(1).flex_1().bg(guide)))
 					.child(div().flex_1().min_w(0).child(child))
 			);
 		});
@@ -824,16 +815,15 @@ export default class PowrSpaces extends View {
 				});
 			})
 			.child(
-				// A tile like a project's, so the tree has one shape at every
-				// level, but a faint one: the projects in it are read first.
-			h_flex()
+				// The folder's colour lives on its drawing, with nothing behind
+				// it; the slot is as wide as a project's so the two line up.
+				h_flex()
 					.id(`powr-folder-tile-${folder.id}`)
-					.size(22).flex_none().rounded(6).items_center().justify_center()
+					.size(22).flex_none().items_center().justify_center()
 					.cursor_pointer()
-					.when(/^#[0-9a-f]{6}$/i.test(tint), (el) => el.bg(`${tint}40`))
 					.child(svg(folder.icon
 						? `mods/spacr/icons/${folder.icon}.svg`
-						: "mods/spacr/folder.svg").size(14).text_color(tint))
+						: "mods/spacr/folder.svg").size(17).text_color(tint))
 			);
 
 		if (this.editing === folder.id) {
@@ -846,7 +836,7 @@ export default class PowrSpaces extends View {
 			);
 		} else {
 			head
-				.child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(folder.name))
+				.child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(folder.name))
 				.child(div().flex_none().text_size(11).text_color(t.dim).child(String(inside.length)))
 				.child(svg(`mods/spacr/chevron-${folder.folded ? "right" : "down"}.svg`)
 					.size(11).flex_none().text_color(t.dim));
@@ -1111,7 +1101,7 @@ export default class PowrSpaces extends View {
 				// Its projects hang off its tile by the same rule a project's
 				// branches hang off the project, in the folder's colour.
 				card.child(this.branches(t, inside.map((node) => this.group(t, node, here, 0)),
-					tint, 0, 4 + 11).pb(2));
+					tint, 0).pb(2));
 			}
 			body.child(card);
 		}
