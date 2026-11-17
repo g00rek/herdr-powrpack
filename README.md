@@ -145,7 +145,9 @@ right-press menu; switching it off puts Herdr's own list back.
   its turn or stopped on an error, such as a used-up limit; a busy agent says
   so and stays where it is. Switchr never moves an agent on its own.
 - **The badge.** Every agent shows its account's name in its row of the Agents
-  list.
+  list, in the account's colour. Press the dot beside an account on the
+  Switchr page to pick one of the terminal's six colours; the colours follow
+  the theme.
 
 Every extra account shares instructions, memory, skills, settings and history
 with the main one; only the login is its own. So a moved agent keeps all of it.

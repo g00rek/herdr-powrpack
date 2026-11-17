@@ -97,7 +97,7 @@ def _empty_registry():
     # agents start on (None: the one in the agent's own folder). No account
     # ranks above another: "main" only says where its login lives.
     return {"main": {"claude": "main", "codex": "main"}, "default": {"claude": None, "codex": None},
-            "accounts": []}
+            "colors": {"claude": {}, "codex": {}}, "accounts": []}
 
 
 def load_registry():
@@ -111,7 +111,39 @@ def load_registry():
     base.update({k: v for k, v in reg.items() if k in base})
     if not isinstance(base["default"], dict):
         base["default"] = _empty_registry()["default"]
+    if not isinstance(base["colors"], dict):
+        base["colors"] = _empty_registry()["colors"]
+    for kind in KINDS:
+        if not isinstance(base["colors"].get(kind), dict):
+            base["colors"][kind] = {}
     return base
+
+
+# The colours an account's badge can wear, named after the terminal's own six
+# so they follow the theme (the panel maps them to ansi1..ansi6). No colour is
+# the theme's accent.
+COLORS = ("red", "green", "yellow", "blue", "magenta", "cyan")
+
+
+def color_of(kind, name, reg=None):
+    reg = reg or load_registry()
+    found = reg["colors"][kind].get(name)
+    return found if found in COLORS else None
+
+
+def set_color(kind, name, color):
+    """Give `name`'s badge one of COLORS, or the accent again with None."""
+    _check_kind(kind)
+    if color is not None and color not in COLORS:
+        raise SwitchrError(f"no colour {color!r}; pick one of {', '.join(COLORS)} or none")
+    if account(kind, name) is None:
+        raise SwitchrError(f"no {kind} account named {name!r}")
+    reg = load_registry()
+    if color is None:
+        reg["colors"][kind].pop(name, None)
+    else:
+        reg["colors"][kind][name] = color
+    save_registry(reg)
 
 
 def default_name(kind, reg=None):
@@ -381,6 +413,7 @@ def _drop(kind, name):
         if entry.get("kind") == kind and entry.get("name") == name:
             home = _guard_home(kind, entry["home"])
             reg["accounts"].remove(entry)
+            reg["colors"][kind].pop(name, None)
             if reg["default"].get(kind) == name:
                 reg["default"][kind] = None
             save_registry(reg)
@@ -427,6 +460,8 @@ def rename(kind, old, new):
         raise SwitchrError("the new name is the same as the old one")
     if _taken(reg, kind, new):
         raise SwitchrError(f"a {kind} account named {new!r} already exists")
+    if old in reg["colors"][kind]:
+        reg["colors"][kind][new] = reg["colors"][kind].pop(old)
     if old == reg["main"].get(kind, "main"):
         reg["main"][kind] = new
         save_registry(reg)
@@ -843,7 +878,8 @@ def list_accounts(with_usage=True):
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(out))) as pool:
             found = list(pool.map(safe, out))
     defaults = {kind: default_name(kind, reg) for kind in KINDS}
-    return [{"kind": k, "name": n, "main": m, "pending": p, "default": n == defaults[k], "usage": u}
+    return [{"kind": k, "name": n, "main": m, "pending": p, "default": n == defaults[k],
+             "color": color_of(k, n, reg), "usage": u}
             for (k, n, m, p), u in zip(out, found)]
 
 
@@ -1006,8 +1042,9 @@ def which():
         if found is None:
             continue
         name = found[1]
-        out[address] = {"kind": kind, "account": name,
-                        "main": name == load_registry()["main"].get(kind, "main"),
+        reg = load_registry()
+        out[address] = {"kind": kind, "account": name, "color": color_of(kind, name, reg),
+                        "main": name == reg["main"].get(kind, "main"),
                         "state": (info.get("status") or {}).get("state")}
     return out
 
@@ -1279,6 +1316,10 @@ def build_parser():
     default_cmd = sub.add_parser("default", help="start new agents of a kind on this account")
     default_cmd.add_argument("kind", choices=KINDS)
     default_cmd.add_argument("name")
+    color_cmd = sub.add_parser("color", help="the colour of an account's badge")
+    color_cmd.add_argument("kind", choices=KINDS)
+    color_cmd.add_argument("name")
+    color_cmd.add_argument("color", choices=COLORS + ("none",))
     return parser
 
 
@@ -1316,6 +1357,10 @@ def main(argv=None):
         elif options.command == "default":
             set_default(options.kind, options.name)
             print(f"switchr: new {options.kind} agents start on {options.name!r}")
+        elif options.command == "color":
+            color = None if options.color == "none" else options.color
+            set_color(options.kind, options.name, color)
+            print(f"switchr: {options.kind} account {options.name!r} wears {color or 'the accent'}")
         elif options.command == "add":
             entry = add(options.kind, options.name)
             print(f"switchr: created {options.kind} account {entry['name']!r}; "

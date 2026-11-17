@@ -24,3 +24,15 @@ export function withUsage(rows, source, missing) {
 }
 
 export const UNKNOWN = { state: "unknown" };
+
+// The colours an account's badge can wear, in the order the panel offers them
+// (null: the theme's accent). Named after the terminal's six, so a theme
+// change repaints them; the agents list maps them the same way.
+export const COLORS = [null, "red", "yellow", "green", "cyan", "blue", "magenta"];
+const ANSI = { red: "ansi1", green: "ansi2", yellow: "ansi3", blue: "ansi4", magenta: "ansi5", cyan: "ansi6" };
+
+/** The paint for a colour name in theme `t`; the accent for none or an unknown one. */
+export function paint(t, color) {
+  const slot = ANSI[color];
+  return (slot && t[slot]) || t.accent;
+}

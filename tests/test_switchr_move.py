@@ -346,9 +346,12 @@ class WhichTests(unittest.TestCase):
         accounts = {100: ("claude", "main"), 300: ("codex", "bonus")}
         with sandbox(), patch.object(switchr, "_hc", hc), \
                 patch.object(switchr, "account_of", side_effect=lambda pid, kind=None: accounts[pid]):
+            reg = switchr.load_registry()
+            reg["colors"]["codex"]["bonus"] = "cyan"
+            switchr.save_registry(reg)
             self.assertEqual(switchr.which(), {
-                "t1": {"kind": "claude", "account": "main", "main": True, "state": "idle"},
-                "t3": {"kind": "codex", "account": "bonus", "main": False, "state": "working"}})
+                "t1": {"kind": "claude", "account": "main", "color": None, "main": True, "state": "idle"},
+                "t3": {"kind": "codex", "account": "bonus", "color": "cyan", "main": False, "state": "working"}})
 
 
 if __name__ == "__main__":

@@ -6,8 +6,8 @@ from pathlib import Path
 import agents_patch
 
 FIXTURE = (Path(__file__).parent / "fixtures" / "agents-main.min.js").read_text()
-IMPORT = 'import { switchrBadge, switchrMenu } from "./switchr.js";'
-BADGE = '.when(Boolean(switchrBadge(a)), el => el.child(div().flex_none().px(5).rounded(4).border_1().border_color(t.accent).text_size(10).text_color(t.accent).child(switchrBadge(a))))'
+IMPORT = 'import { switchrBadge, switchrColor, switchrMenu } from "./switchr.js";'
+BADGE = '.when(Boolean(switchrBadge(a)), el => el.child(div().flex_none().px(5).rounded(4).border_1().border_color(switchrColor(a, t)).text_size(10).text_color(switchrColor(a, t)).child(switchrBadge(a))))'
 MENU = '.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); switchrMenu(a); })'
 CLICK = '.on_click(() => run("pane.focus", { pane: a.pane }))'
 

@@ -203,6 +203,31 @@ class AccountTests(unittest.TestCase):
             self.assertEqual(switchr.default_name("claude"), "main")
             self.assertEqual(json.loads(path.read_text())["programs"]["claude"], {"run": ["my-claude"]})
 
+    def test_color_is_kept_renamed_and_dropped_with_the_account(self):
+        with sandbox():
+            self.confirmed("claude", "work")
+            switchr.set_color("claude", "work", "green")
+            switchr.set_color("claude", "main", "blue")
+            rows = {r["name"]: r["color"] for r in switchr.list_accounts(with_usage=False)
+                    if r["kind"] == "claude"}
+            self.assertEqual(rows, {"main": "blue", "work": "green"})
+            with patch.object(switchr, "running_homes", return_value={}):
+                switchr.rename("claude", "work", "job")
+                switchr.rename("claude", "main", "home")
+                self.assertEqual(switchr.color_of("claude", "job"), "green")
+                self.assertEqual(switchr.color_of("claude", "home"), "blue")
+                switchr.remove("claude", "job")
+            self.assertEqual(switchr.load_registry()["colors"]["claude"], {"home": "blue"})
+            switchr.set_color("claude", "home", None)
+            self.assertIsNone(switchr.color_of("claude", "home"))
+
+    def test_color_refuses_an_unknown_colour_or_account(self):
+        with sandbox():
+            with self.assertRaises(switchr.SwitchrError):
+                switchr.set_color("claude", "main", "pink")
+            with self.assertRaises(switchr.SwitchrError):
+                switchr.set_color("claude", "ghost", "red")
+
     def test_default_must_be_logged_in(self):
         with sandbox():
             switchr.add("claude", "pend")
