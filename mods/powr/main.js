@@ -3,7 +3,7 @@ import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { exec, focused, spaces, theme, home, appHome, notify, run, props, shared, setShared,
 	closeOverlay, layout, openOverlay, readTextFile, writeTextFile } from "herdr";
 import { swapMod, savedSizes } from "./layout-swap.js";
-import { usageLine, withUsage, UNKNOWN } from "./switchr-accounts.js";
+import { usageLine, withUsage, UNKNOWN, COLORS, paint } from "./switchr-accounts.js";
 
 // Powr: one button in the chrome and one panel. The panel switches the
 // modules of the pack on and off and shows a page for each.
@@ -44,6 +44,7 @@ const WASH = "spacr.wash";            // folder background: none|light|medium|st
 // The addresses are the core's terminal IDs ("t12"); Herdr's own agents list
 // joins agents() and terminals() on the same key, so they match as they are.
 const WHERE = "switchr.where";
+const COLOR = "switchr.color";        // { [address]: colour name } for badges with one
 const AGENTS = "switchr.agents";
 const WHICH_EVERY = 3000;
 const SWITCHR_LIST = "switchr-agents"; // the patched copy of Herdr's agents list
@@ -177,6 +178,7 @@ export default class Powr extends View {
       this.listing = false;
       this.editing = null;   // { mode: "rename" | "add", kind, name }
       this.removing = null;  // "kind/name" waiting for its second press
+      this.coloring = null;  // "kind/name" whose colours are showing
       this.field = InputState.new({ placeholder: "Name" });
       this.field.on("submit", (_event, cx) => this.commitField(cx));
       cx.timer.every(STATUS_EVERY, (cx) => {
@@ -373,6 +375,7 @@ export default class Powr extends View {
           this.loadAccounts(cx);
         } else {
           setShared(WHERE, {});
+          setShared(COLOR, {});
           setShared(AGENTS, {});
         }
         cx.notify();
@@ -433,10 +436,13 @@ export default class Powr extends View {
         // the badges, and this late answer must not bring them back.
         if (!this.modules().switchr) return;
         const where = {};
+        const color = {};
         for (const [address, row] of Object.entries(found)) {
-          if (row && row.main === false && row.account) where[address] = row.account;
+          if (row && row.account) where[address] = row.account;
+          if (row && row.account && row.color) color[address] = row.color;
         }
         if (!same(shared(WHERE), where)) setShared(WHERE, where);
+        if (!same(shared(COLOR), color)) setShared(COLOR, color);
         if (!same(shared(AGENTS), found)) setShared(AGENTS, found);
       } catch {
         // The next tick tries again; a missing badge is the honest failure.
@@ -869,20 +875,50 @@ export default class Powr extends View {
           : "Type the new name and press Enter.")));
   }
 
+  /** A round swatch; `ring` marks the one in use. */
+  swatch(t, id, color, ring, handler) {
+    return div().id(id).flex_none().size(14).rounded(7).cursor_pointer()
+      .bg(paint(t, color))
+      .border_2().border_color(ring ? t.foreground : t.chrome)
+      .on_click((_event, cx) => handler(cx));
+  }
+
+  /** The colours an account's badge can wear, under its row. */
+  colorRow(t, account) {
+    const key = `${account.kind}/${account.name}`;
+    const row = h_flex().items_center().gap(8).pl(22).pb(4);
+    for (const color of COLORS) {
+      row.child(this.swatch(t, `switchr-color-${key}-${color ?? "accent"}`, color,
+        (account.color ?? null) === color, (cx) => {
+          this.coloring = null;
+          this.switchrCommand(["color", account.kind, account.name, color ?? "none"], "Could not change the colour.", cx);
+        }));
+    }
+    return row;
+  }
+
   accountRow(t, account) {
     const key = `${account.kind}/${account.name}`;
     const renaming = this.editing?.mode === "rename" && this.editing.kind === account.kind
       && this.editing.name === account.name;
-    const row = h_flex().items_center().gap(8).py(3);
+    const row = h_flex().items_center().gap(8).py(3)
+      .child(this.swatch(t, `switchr-swatch-${key}`, account.color, false, (cx) => {
+        this.coloring = this.coloring === key ? null : key;
+        cx.notify();
+      }));
     if (renaming) {
       row.child(this.nameField(t));
     } else {
       row.child(v_flex().flex_1().min_w(0)
         .child(h_flex().items_center().gap(6)
           .child(div().text_color(t.foreground).truncate().child(account.name))
-          .when(account.main === true, (el) => el.child(
-            div().text_size(11).text_color(t.dim).child("main"))))
+          .when(account.default === true, (el) => el.child(
+            div().text_size(11).text_color(t.dim).child("default"))))
         .child(div().text_size(12).text_color(t.dim).child(usageLine(account))));
+    }
+    if (account.default !== true && !account.pending) {
+      row.child(this.smallButton(t, `switchr-default-${key}`, "Make default",
+        (cx) => this.switchrCommand(["default", account.kind, account.name], "Could not make it the default.", cx)));
     }
     row.child(this.smallButton(t, `switchr-rename-${key}`, "Rename",
       (cx) => this.startEditing({ mode: "rename", kind: account.kind, name: account.name }, cx)));
@@ -890,14 +926,14 @@ export default class Powr extends View {
       row.child(this.smallButton(t, `switchr-remove-${key}`,
         this.removing === key ? "Sure?" : "Remove", (cx) => this.removeAccount(account, cx)));
     }
-    return row;
+    if (this.coloring !== key) return row;
+    return v_flex().child(row).child(this.colorRow(t, account));
   }
 
   renderSwitchrPage(t) {
     const line = (text) => div().text_size(12).text_color(t.dim).child(text);
     const page = v_flex().gap(4)
-      .child(line("Right press on an agent in the Agents list to move it to another account."))
-      .child(line("An agent on an account other than main shows that account's name."));
+      .child(line("Right press on an agent in the Agents list to move it to another account."));
     if (this.accounts === null) {
       return page.child(div().pt(10).text_size(12).text_color(t.dim)
         .child(this.accountsNote || "Checking…"));
@@ -989,7 +1025,7 @@ export default class Powr extends View {
     menu.child(div().px(6).pt(2).pb(4).text_size(11).text_color(t.dim)
       .child(`${(KIND_NAMES[agent.kind] ?? agent.kind).toUpperCase()} ACCOUNT`));
     if (this.menuAccounts === null) return menu.child(note("Checking…"));
-    const busy = !["idle", "done"].includes(agent.state);
+    const busy = !["idle", "done", "error"].includes(agent.state);
     for (const account of this.menuAccounts.filter((a) => a.kind === agent.kind)) {
       const current = account.name === agent.account;
       const loggedIn = !account.pending && account.usage?.state !== "logged-out";
@@ -1002,8 +1038,10 @@ export default class Powr extends View {
           .on_click((_event, cx) => this.moveTo(account.name, cx)))
         .child(div().w(12).flex_none().text_color(t.accent).child(current ? "✓" : ""))
         .child(v_flex().flex_1().min_w(0)
-          .child(div().truncate().text_color(t.foreground)
-            .child(this.moving === account.name ? `Moving to ${account.name}…` : account.name))
+          .child(h_flex().items_center().gap(6)
+            .child(div().flex_none().size(8).rounded(4).bg(paint(t, account.color)))
+            .child(div().truncate().text_color(t.foreground)
+              .child(this.moving === account.name ? `Moving to ${account.name}…` : account.name)))
           .child(div().text_size(11).text_color(t.dim).child(usageLine(account)))));
     }
     if (busy) menu.child(note("Busy — you can move it once it has finished."));

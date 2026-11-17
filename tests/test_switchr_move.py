@@ -210,13 +210,32 @@ class MoveTests(unittest.TestCase):
                 self.assertFalse(self.run_move(hc, accounts, name=name)["ok"], name)
                 self.assertEqual(hc.sends(), [], name)
 
-    def test_move_refuses_without_session(self):
+    def test_move_without_session_starts_fresh(self):
         with sandbox():
             self.confirm_bonus()
-            hc = FakeHc([terminal(100)])
-            result = self.run_move(hc, {}, session=None)
-            self.assertFalse(result["ok"])
-            self.assertEqual(hc.sends(), [])
+            argv = ["claude", "--model", "x", "fix X"]
+            hc = FakeHc([
+                terminal(100, argv=argv),
+                terminal(50, name="bash", argv=["/usr/bin/bash"]),
+                terminal(200, argv=["claude"]),
+            ])
+            result = self.run_move(hc, {200: "bonus"}, session=None, sessions={200: "other"})
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["message"], "Moved to bonus.")
+            launch = shlex.join([SCRIPT, "run", "claude", "bonus", "--", "--model", "x"])
+            self.assertEqual(hc.sends(), [["send", "t1", "/exit"], ["send", "t1", launch]])
+
+    def test_move_takes_an_agent_stopped_by_an_error(self):
+        with sandbox():
+            self.confirm_bonus()
+            hc = FakeHc([
+                terminal(100, state="error"),
+                terminal(50, name="bash", argv=["/usr/bin/bash"]),
+                terminal(200, argv=["claude"]),
+            ])
+            result = self.run_move(hc, {200: "bonus"})
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["message"], "Moved to bonus, same conversation.")
 
     def test_move_gives_up_after_quit_timeout(self):
         with sandbox():
@@ -327,10 +346,14 @@ class WhichTests(unittest.TestCase):
         accounts = {100: ("claude", "main"), 300: ("codex", "bonus")}
         with sandbox(), patch.object(switchr, "_hc", hc), \
                 patch.object(switchr, "account_of", side_effect=lambda pid, kind=None: accounts[pid]):
+            reg = switchr.load_registry()
+            reg["colors"]["codex"]["bonus"] = "cyan"
+            switchr.save_registry(reg)
             self.assertEqual(switchr.which(), {
-                "t1": {"kind": "claude", "account": "main", "main": True, "state": "idle"},
-                "t3": {"kind": "codex", "account": "bonus", "main": False, "state": "working"}})
+                "t1": {"kind": "claude", "account": "main", "color": None, "main": True, "state": "idle"},
+                "t3": {"kind": "codex", "account": "bonus", "color": "cyan", "main": False, "state": "working"}})
 
 
 if __name__ == "__main__":
     unittest.main()
+

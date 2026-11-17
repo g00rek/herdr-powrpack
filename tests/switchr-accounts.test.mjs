@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { usageLine, withUsage, UNKNOWN } from '../mods/powr/switchr-accounts.js';
+import { usageLine, withUsage, UNKNOWN, COLORS, paint } from '../mods/powr/switchr-accounts.js';
 
 const ok = { session: 12, week: 40, resets: null, state: 'ok' };
 
@@ -29,4 +29,14 @@ test('a fresh names list keeps the limits already known', () => {
 	const before = [{ kind: 'claude', name: 'work', usage: ok }];
 	const names = [{ kind: 'claude', name: 'work', usage: null }, { kind: 'claude', name: 'new', usage: null }];
 	assert.deepEqual(withUsage(names, before, null).map((a) => a.usage), [ok, null]);
+});
+
+test('a colour is painted from the theme, the accent when none', () => {
+	const t = { accent: '#a', ansi1: '#r', ansi4: '#b', ansi6: '#c' };
+	assert.equal(paint(t, 'red'), '#r');
+	assert.equal(paint(t, 'blue'), '#b');
+	assert.equal(paint(t, 'cyan'), '#c');
+	assert.equal(paint(t, null), '#a');
+	assert.equal(paint(t, 'pink'), '#a');
+	assert.equal(COLORS[0], null);
 });

@@ -93,7 +93,11 @@ def main_claude_json():
 # ----------------------------------------------------------------- registry
 
 def _empty_registry():
-    return {"main": {"claude": "main", "codex": "main"}, "accounts": []}
+    # `main` names the agent's own login folder; `default` is the account new
+    # agents start on (None: the one in the agent's own folder). No account
+    # ranks above another: "main" only says where its login lives.
+    return {"main": {"claude": "main", "codex": "main"}, "default": {"claude": None, "codex": None},
+            "colors": {"claude": {}, "codex": {}}, "accounts": []}
 
 
 def load_registry():
@@ -105,7 +109,72 @@ def load_registry():
         return _empty_registry()
     base = _empty_registry()
     base.update({k: v for k, v in reg.items() if k in base})
+    if not isinstance(base["default"], dict):
+        base["default"] = _empty_registry()["default"]
+    if not isinstance(base["colors"], dict):
+        base["colors"] = _empty_registry()["colors"]
+    for kind in KINDS:
+        if not isinstance(base["colors"].get(kind), dict):
+            base["colors"][kind] = {}
     return base
+
+
+# The colours an account's badge can wear, named after the terminal's own six
+# so they follow the theme (the panel maps them to ansi1..ansi6). No colour is
+# the theme's accent.
+COLORS = ("red", "green", "yellow", "blue", "magenta", "cyan")
+
+
+def color_of(kind, name, reg=None):
+    reg = reg or load_registry()
+    found = reg["colors"][kind].get(name)
+    return found if found in COLORS else None
+
+
+def set_color(kind, name, color):
+    """Give `name`'s badge one of COLORS, or the accent again with None."""
+    _check_kind(kind)
+    if color is not None and color not in COLORS:
+        raise SwitchrError(f"no colour {color!r}; pick one of {', '.join(COLORS)} or none")
+    if account(kind, name) is None:
+        raise SwitchrError(f"no {kind} account named {name!r}")
+    reg = load_registry()
+    if color is None:
+        reg["colors"][kind].pop(name, None)
+    else:
+        reg["colors"][kind][name] = color
+    save_registry(reg)
+
+
+def default_name(kind, reg=None):
+    """The account new `kind` agents start on: the one chosen, if it is still there
+    and logged in, else the one in the agent's own folder."""
+    reg = reg or load_registry()
+    chosen = reg["default"].get(kind)
+    for entry in reg["accounts"]:
+        if entry.get("kind") == kind and entry.get("name") == chosen and not entry.get("pending"):
+            return chosen
+    return reg["main"].get(kind, "main")
+
+
+def set_default(kind, name):
+    """Make `name` the account new `kind` agents start on."""
+    _check_kind(kind)
+    entry = account(kind, name)
+    if entry is None:
+        raise SwitchrError(f"no {kind} account named {name!r}")
+    if entry.get("pending"):
+        raise SwitchrError(f"{name!r} is not logged in yet")
+    reg = load_registry()
+    before = dict(reg["default"])
+    reg["default"][kind] = None if entry.get("main") else name
+    save_registry(reg)
+    try:
+        sync_programs()
+    except SwitchrError:
+        reg["default"] = before
+        save_registry(reg)
+        raise
 
 
 def save_registry(reg):
@@ -344,6 +413,9 @@ def _drop(kind, name):
         if entry.get("kind") == kind and entry.get("name") == name:
             home = _guard_home(kind, entry["home"])
             reg["accounts"].remove(entry)
+            reg["colors"][kind].pop(name, None)
+            if reg["default"].get(kind) == name:
+                reg["default"][kind] = None
             save_registry(reg)
             if home.is_dir() and not home.is_symlink():
                 shutil.rmtree(home)
@@ -388,9 +460,12 @@ def rename(kind, old, new):
         raise SwitchrError("the new name is the same as the old one")
     if _taken(reg, kind, new):
         raise SwitchrError(f"a {kind} account named {new!r} already exists")
+    if old in reg["colors"][kind]:
+        reg["colors"][kind][new] = reg["colors"][kind].pop(old)
     if old == reg["main"].get(kind, "main"):
         reg["main"][kind] = new
         save_registry(reg)
+        sync_programs()
         return {"kind": kind, "name": new, "home": None, "main": True}
     for entry in reg["accounts"]:
         if entry.get("kind") == kind and entry.get("name") == old:
@@ -404,6 +479,8 @@ def rename(kind, old, new):
             if old_home.is_dir():
                 os.rename(old_home, new_home)
             entry["name"], entry["home"] = new, str(new_home)
+            if reg["default"].get(kind) == old:
+                reg["default"][kind] = new
             save_registry(reg)
             sync_programs()
             return entry
@@ -430,10 +507,21 @@ def _programs_path():
 
 
 OWNED_KEY = re.compile(r"^switchr-(?:%s)-" % "|".join(KINDS))
+# Herdr's own launch of each agent, from its built-in program table (read
+# from herdr-app 2026-11-17: claude runs ["claude"], codex ["codex",
+# "--no-daemon"]). The default account takes over that entry's `run`, so the
+# plain "Claude Code" / "Codex" in the new-agent menu starts on it.
+BUILT_IN_ARGS = {"claude": [], "codex": ["--no-daemon"]}
+
+
+def _menu_run(script, kind, name):
+    extra = BUILT_IN_ARGS[kind]
+    return [script, "run", kind, name, *(["--", *extra] if extra else [])]
 
 
 def sync_programs():
-    """Make the new-agent menu list every confirmed extra account, touching nothing else."""
+    """Make the new-agent menu start on the default account and list every other
+    account once, touching nothing else."""
     path = _programs_path()
     try:
         data = json.loads(path.read_text())
@@ -447,12 +535,31 @@ def sync_programs():
     table = table if isinstance(table, dict) else {}
     table = {k: v for k, v in table.items() if not OWNED_KEY.match(k)}
     script = str(Path(__file__).resolve())
-    for entry in load_registry()["accounts"]:
-        if entry.get("pending"):
+    reg = load_registry()
+    for kind in KINDS:
+        default = default_name(kind, reg)
+        names = [reg["main"].get(kind, "main")] + [
+            e["name"] for e in reg["accounts"] if e.get("kind") == kind and not e.get("pending")]
+        if len(names) > 1:
+            for name in names:
+                if name != default:
+                    table[f"switchr-{kind}-{name}"] = {
+                        "name": f"{kind.capitalize()} \u00b7 {name}", "run": _menu_run(script, kind, name)}
+        own = table.get(kind) if isinstance(table.get(kind), dict) else None
+        ours = bool(own and isinstance(own.get("run"), list) and own["run"][:1] == [script])
+        if own and "run" in own and not ours:
+            if default != reg["main"].get(kind, "main"):
+                raise SwitchrError(f"{path} already sets how {kind} starts; Switchr left it alone")
             continue
-        kind, name = entry["kind"], entry["name"]
-        table[f"switchr-{kind}-{name}"] = {
-            "name": f"{kind.capitalize()} \u00b7 {name}", "run": [script, "run", kind, name]}
+        if default == reg["main"].get(kind, "main"):
+            if ours:
+                own = {k: v for k, v in own.items() if k != "run"}
+                if own:
+                    table[kind] = own
+                else:
+                    table.pop(kind)
+        else:
+            table[kind] = {**(own or {}), "run": _menu_run(script, kind, default)}
     data["programs"] = table
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".programs-")
@@ -770,7 +877,9 @@ def list_accounts(with_usage=True):
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(out))) as pool:
             found = list(pool.map(safe, out))
-    return [{"kind": k, "name": n, "main": m, "pending": p, "usage": u}
+    defaults = {kind: default_name(kind, reg) for kind in KINDS}
+    return [{"kind": k, "name": n, "main": m, "pending": p, "default": n == defaults[k],
+             "color": color_of(k, n, reg), "usage": u}
             for (k, n, m, p), u in zip(out, found)]
 
 
@@ -933,8 +1042,9 @@ def which():
         if found is None:
             continue
         name = found[1]
-        out[address] = {"kind": kind, "account": name,
-                        "main": name == load_registry()["main"].get(kind, "main"),
+        reg = load_registry()
+        out[address] = {"kind": kind, "account": name, "color": color_of(kind, name, reg),
+                        "main": name == reg["main"].get(kind, "main"),
                         "state": (info.get("status") or {}).get("state")}
     return out
 
@@ -985,9 +1095,10 @@ CLI_OPTIONS = {
 
 
 def resume_argv(kind, argv, session):
-    """Arguments to start `kind` again on `session`: the original options minus
-    any resume and minus prompts. Refuses (SwitchrError) when an unknown option
-    is followed by a word, since that word may be its value or a prompt."""
+    """Arguments to start `kind` again on `session` (None: a new conversation):
+    the original options minus any resume and minus prompts. Refuses
+    (SwitchrError) when an unknown option is followed by a word, since that
+    word may be its value or a prompt."""
     table = CLI_OPTIONS[kind]
     args = list(argv[1:])
     kept = []
@@ -1017,6 +1128,8 @@ def resume_argv(kind, argv, session):
                     f"{args[i]!r}; Switchr cannot tell whether that is the option's value or a prompt")
         if name not in table["DROP"]:
             kept += [arg, *values]
+    if session is None:
+        return kept
     return [*kept, "--resume", session] if kind == "claude" else ["resume", session, *kept]
 
 
@@ -1103,7 +1216,8 @@ def move(address, name):
         return _result(False, "Still working — try when it has finished.")
     if state == "blocked":
         return _result(False, "It is waiting for an answer — reply to it first, then move it.")
-    if state not in ("idle", "done"):
+    # "error": the last turn failed, e.g. on a used-up limit; it waits at its prompt.
+    if state not in ("idle", "done", "error"):
         return _result(False, "Cannot tell whether it is idle, so it was left alone.")
     target = account(kind, name)
     if target is None:
@@ -1116,9 +1230,8 @@ def move(address, name):
         return _result(False, "Could not tell which account it is on, so it was left alone.")
     if current[1] == name:
         return _result(False, f"It is already on {name}.")
+    # No conversation yet: it starts again, empty, on the other account.
     session = session_of(kind, pid)
-    if not session:
-        return _result(False, "There is no conversation to carry over yet, so nothing was changed.")
     try:
         args = resume_argv(kind, foreground.get("argv") or [AGENT[kind]], session)
     except SwitchrError as error:
@@ -1153,7 +1266,7 @@ def move(address, name):
             return False
         if (account_of(fg["pid"], kind) or (None, None))[1] != name:
             return False
-        return kind != "claude" or _claude_session_id(fg["pid"]) == session
+        return kind != "claude" or session is None or _claude_session_id(fg["pid"]) == session
 
     try:
         _hc(["send", address, line])
@@ -1162,9 +1275,10 @@ def move(address, name):
         return _result(False, f"The agent quit but could not be started again: {error}. "
                               f"To continue, run: {line}")
     if not arrived_ok:
-        return _result(False, f"Started on {name}, but could not confirm the same conversation "
+        what = "the same conversation" if session else "it"
+        return _result(False, f"Started on {name}, but could not confirm {what} "
                               f"within {LAUNCH_WAIT} seconds; check the terminal.")
-    return _result(True, f"Moved to {name}, same conversation.")
+    return _result(True, f"Moved to {name}, same conversation." if session else f"Moved to {name}.")
 
 
 # --------------------------------------------------------------------- CLI
@@ -1199,6 +1313,13 @@ def build_parser():
     move_cmd.add_argument("address")
     move_cmd.add_argument("name")
     move_cmd.add_argument("--json", action="store_true")
+    default_cmd = sub.add_parser("default", help="start new agents of a kind on this account")
+    default_cmd.add_argument("kind", choices=KINDS)
+    default_cmd.add_argument("name")
+    color_cmd = sub.add_parser("color", help="the colour of an account's badge")
+    color_cmd.add_argument("kind", choices=KINDS)
+    color_cmd.add_argument("name")
+    color_cmd.add_argument("color", choices=COLORS + ("none",))
     return parser
 
 
@@ -1233,6 +1354,13 @@ def main(argv=None):
             result = move(options.address, options.name)
             print(json.dumps(result) if options.json else f"switchr: {result['message']}")
             return 0 if result["ok"] else 1
+        elif options.command == "default":
+            set_default(options.kind, options.name)
+            print(f"switchr: new {options.kind} agents start on {options.name!r}")
+        elif options.command == "color":
+            color = None if options.color == "none" else options.color
+            set_color(options.kind, options.name, color)
+            print(f"switchr: {options.kind} account {options.name!r} wears {color or 'the accent'}")
         elif options.command == "add":
             entry = add(options.kind, options.name)
             print(f"switchr: created {options.kind} account {entry['name']!r}; "
