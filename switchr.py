@@ -1008,8 +1008,7 @@ def which():
         name = found[1]
         out[address] = {"kind": kind, "account": name,
                         "main": name == load_registry()["main"].get(kind, "main"),
-                        "state": (info.get("status") or {}).get("state"),
-                        "message": (info.get("status") or {}).get("msg")}
+                        "state": (info.get("status") or {}).get("state")}
     return out
 
 
@@ -1245,133 +1244,6 @@ def move(address, name):
     return _result(True, f"Moved to {name}, same conversation." if session else f"Moved to {name}.")
 
 
-# ------------------------------------------------------------- used-up limits
-
-# How Claude Code records a turn refused on a used-up limit, read from a live
-# transcript on 2026-11-17 (Claude Code 2.1.326): an assistant record with
-# "apiError": "usage_limit_reached" (also "error": "rate_limit", status 429,
-# "apiErrorParams.rate_limit_info.rateLimitType": "seven_day"). Herdr shows
-# the terminal as state "error" with the message "You've hit your weekly limit".
-LIMIT_ERROR = "usage_limit_reached"
-# The same stop as Claude Code reports it to Herdr. Seen live 2026-11-17 on a
-# terminal whose refused call never reached the transcript (its last turn
-# there was a normal answer), so the report alone must also count.
-LIMIT_REPORT = re.compile(r"hit your .*limit", re.IGNORECASE)
-TAIL_BYTES = 256 * 1024
-RESCUED_KEEP = 200
-
-
-def limit_hit(session):
-    """uuid of the record if the conversation's last turn was refused on a used-up limit."""
-    found = list((main_home("claude") / "projects").glob(f"*/{session}.jsonl"))
-    if not found:
-        return None
-    try:
-        with open(found[0], "rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            handle.seek(max(0, handle.tell() - TAIL_BYTES))
-            lines = handle.read().splitlines()
-    except OSError:
-        return None
-    for raw in reversed(lines):
-        try:
-            record = json.loads(raw)
-        except ValueError:
-            continue
-        if not isinstance(record, dict) or record.get("type") not in ("user", "assistant"):
-            continue
-        if record.get("type") == "assistant" and record.get("apiError") == LIMIT_ERROR:
-            return record.get("uuid") or None
-        return None
-    return None
-
-
-def _rescued_path():
-    return data_dir() / "rescued.json"
-
-
-def _load_rescued():
-    try:
-        value = json.loads(_rescued_path().read_text())
-    except (OSError, ValueError):
-        return []
-    return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
-
-
-def _save_rescued(seen):
-    path = _rescued_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".rescued-")
-    try:
-        with os.fdopen(fd, "w") as handle:
-            json.dump(seen[-RESCUED_KEEP:], handle)
-        os.replace(tmp, path)
-    except BaseException:
-        with_suppress_unlink(tmp)
-        raise
-
-
-def _has_room(u):
-    return (isinstance(u, dict) and u.get("state") == "ok"
-            and isinstance(u.get("session"), int) and isinstance(u.get("week"), int)
-            and u["session"] < 100 and u["week"] < 100)
-
-
-def rescue():
-    """Move every Claude agent whose last turn hit a used-up limit to an account
-    with room left: the default if it has some, else the one with the most.
-    Each refused turn is acted on once, so a failed move is never retried.
-    Several Herdr windows may ask at once; only one acts, the others get nothing."""
-    data_dir().mkdir(parents=True, exist_ok=True)
-    with open(data_dir() / "rescue.lock", "w") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return []
-        return _rescue()
-
-
-def _rescue():
-    results = []
-    accounts = None
-    for address, row in which().items():
-        if row.get("kind") != "claude" or row.get("state") != "error":
-            continue
-        try:
-            pid = ((_hc(["get", address]).get("foreground") or {}).get("pid"))
-        except SwitchrError:
-            continue
-        session = _claude_session_id(pid) if pid else None
-        if not session:
-            continue
-        hit = limit_hit(session)
-        if not hit and LIMIT_REPORT.search(str(row.get("message") or "")):
-            # No record to name it by: the conversation as it stands now, so
-            # it is acted on again only after it has moved on.
-            found = list((main_home("claude") / "projects").glob(f"*/{session}.jsonl"))
-            try:
-                hit = f"{session}@{found[0].stat().st_mtime_ns}" if found else f"{session}@new"
-            except OSError:
-                continue
-        seen = _load_rescued()
-        if not hit or hit in seen:
-            continue
-        _save_rescued([*seen, hit])
-        if accounts is None:
-            accounts = [a for a in list_accounts() if a["kind"] == "claude"]
-        targets = sorted((a for a in accounts if a["name"] != row["account"] and not a["pending"]
-                          and _has_room(a["usage"])),
-                         key=lambda a: (not a["default"], max(a["usage"]["session"], a["usage"]["week"])))
-        lead = f"{row['account']} has used up its limit."
-        if not targets:
-            results.append({"address": address, "ok": False,
-                            "message": f"{lead} No other Claude account has any left."})
-            continue
-        moved = move(address, targets[0]["name"])
-        results.append({"address": address, "ok": moved["ok"], "message": f"{lead} {moved['message']}"})
-    return results
-
-
 # --------------------------------------------------------------------- CLI
 
 def build_parser():
@@ -1407,8 +1279,6 @@ def build_parser():
     default_cmd = sub.add_parser("default", help="start new agents of a kind on this account")
     default_cmd.add_argument("kind", choices=KINDS)
     default_cmd.add_argument("name")
-    rescue_cmd = sub.add_parser("rescue", help="move agents stopped by a used-up limit")
-    rescue_cmd.add_argument("--json", action="store_true")
     return parser
 
 
@@ -1446,13 +1316,6 @@ def main(argv=None):
         elif options.command == "default":
             set_default(options.kind, options.name)
             print(f"switchr: new {options.kind} agents start on {options.name!r}")
-        elif options.command == "rescue":
-            results = rescue()
-            if options.json:
-                print(json.dumps(results))
-            else:
-                for r in results:
-                    print(f"{r['address']:8}{r['message']}")
         elif options.command == "add":
             entry = add(options.kind, options.name)
             print(f"switchr: created {options.kind} account {entry['name']!r}; "

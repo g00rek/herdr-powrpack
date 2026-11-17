@@ -142,12 +142,8 @@ right-press menu; switching it off puts Herdr's own list back.
   account. The agent is closed and its conversation is resumed on the new
   account in the same terminal. An agent that has said nothing yet starts
   again, empty, on the new account. This works once the agent has finished
-  its turn or stopped on an error; a busy agent says so and stays where it is.
-- **A used-up limit.** When a Claude agent's turn is refused because its
-  account's limit is used up, Switchr moves it on its own, same conversation,
-  to the default account if that has room left, else to the account with the
-  most left, and says so. Send a message to carry on. Codex agents are not
-  moved on their own yet.
+  its turn or stopped on an error, such as a used-up limit; a busy agent says
+  so and stays where it is. Switchr never moves an agent on its own.
 - **The badge.** Every agent shows its account's name in its row of the Agents
   list.
 

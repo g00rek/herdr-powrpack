@@ -169,7 +169,6 @@ export default class Powr extends View {
       // Which account each agent is on, for the badges. The button is on
       // screen all day and exists once, so it is the one that keeps it.
       this.asking = false;
-      this.rescuing = false;
       cx.timer.every(WHICH_EVERY, (cx) => this.publishWhere(cx));
       this.publishWhere(cx);
     } else {
@@ -439,37 +438,10 @@ export default class Powr extends View {
         }
         if (!same(shared(WHERE), where)) setShared(WHERE, where);
         if (!same(shared(AGENTS), found)) setShared(AGENTS, found);
-        if (Object.values(found).some((row) => row?.kind === "claude" && row.state === "error")) {
-          this.rescue(cx);
-        }
       } catch {
         // The next tick tries again; a missing badge is the honest failure.
       } finally {
         this.asking = false;
-      }
-    });
-  }
-
-  /**
-   * An agent stopped with an error: if it was a used-up limit, Switchr moves
-   * it to an account with room left. Switchr acts on each refused turn once,
-   * so asking again on every tick is safe; one question is out at a time.
-   */
-  rescue(cx) {
-    if (this.rescuing) return;
-    this.rescuing = true;
-    cx.spawn(async () => {
-      try {
-        const r = await exec(SWITCHR, ["rescue", "--json"], { timeout: 120000 });
-        const results = r.code === 0 ? JSON.parse(r.stdout) : [];
-        for (const result of Array.isArray(results) ? results : []) {
-          notify({ title: "Switchr", body: String(result.message ?? ""),
-            level: result.ok ? "success" : "warning" });
-        }
-      } catch {
-        // The next tick asks again.
-      } finally {
-        this.rescuing = false;
       }
     });
   }
