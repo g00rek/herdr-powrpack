@@ -153,6 +153,62 @@ class AccountTests(unittest.TestCase):
                 "run": [str(Path(switchr.__file__).resolve()), "run", "claude", "work"]})
             self.assertEqual(data["programs"]["lazygit"]["run"], ["lazygit"])
 
+    def confirmed(self, kind, *names):
+        for name in names:
+            switchr.add(kind, name)
+        reg = switchr.load_registry()
+        for entry in reg["accounts"]:
+            entry.pop("pending", None)
+        switchr.save_registry(reg)
+
+    def test_default_takes_over_the_plain_menu_entry(self):
+        script = str(Path(switchr.__file__).resolve())
+        with sandbox():
+            path = Path(os.environ["HERDR_APP_HOME"]) / "programs.json"
+            path.write_text(json.dumps({"programs": {"claude": {"tile": "#000"}}}))
+            self.confirmed("claude", "work")
+            self.confirmed("codex", "spare")
+            switchr.set_default("claude", "work")
+            switchr.set_default("codex", "spare")
+            programs = json.loads(path.read_text())["programs"]
+            self.assertEqual(programs["claude"], {"tile": "#000", "run": [script, "run", "claude", "work"]})
+            self.assertEqual(programs["codex"]["run"], [script, "run", "codex", "spare", "--", "--no-daemon"])
+            self.assertIn("switchr-claude-main", programs)
+            self.assertNotIn("switchr-claude-work", programs)
+            self.assertEqual([r["name"] for r in switchr.list_accounts(with_usage=False) if r["default"]],
+                             ["work", "spare"])
+            switchr.set_default("claude", "main")
+            programs = json.loads(path.read_text())["programs"]
+            self.assertEqual(programs["claude"], {"tile": "#000"})
+            self.assertIn("switchr-claude-work", programs)
+            self.assertNotIn("switchr-claude-main", programs)
+
+    def test_default_follows_rename_and_falls_back_on_remove(self):
+        with sandbox():
+            self.confirmed("claude", "work")
+            switchr.set_default("claude", "work")
+            with patch.object(switchr, "running_homes", return_value={}):
+                switchr.rename("claude", "work", "job")
+                self.assertEqual(switchr.default_name("claude"), "job")
+                switchr.remove("claude", "job")
+            self.assertEqual(switchr.default_name("claude"), "main")
+
+    def test_default_leaves_a_run_it_does_not_own(self):
+        with sandbox():
+            path = Path(os.environ["HERDR_APP_HOME"]) / "programs.json"
+            path.write_text(json.dumps({"programs": {"claude": {"run": ["my-claude"]}}}))
+            self.confirmed("claude", "work")
+            with self.assertRaises(switchr.SwitchrError):
+                switchr.set_default("claude", "work")
+            self.assertEqual(switchr.default_name("claude"), "main")
+            self.assertEqual(json.loads(path.read_text())["programs"]["claude"], {"run": ["my-claude"]})
+
+    def test_default_must_be_logged_in(self):
+        with sandbox():
+            switchr.add("claude", "pend")
+            with self.assertRaises(switchr.SwitchrError):
+                switchr.set_default("claude", "pend")
+
     def test_sync_programs_creates_missing_file(self):
         with sandbox():
             switchr.sync_programs()

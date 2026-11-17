@@ -169,6 +169,7 @@ export default class Powr extends View {
       // Which account each agent is on, for the badges. The button is on
       // screen all day and exists once, so it is the one that keeps it.
       this.asking = false;
+      this.rescuing = false;
       cx.timer.every(WHICH_EVERY, (cx) => this.publishWhere(cx));
       this.publishWhere(cx);
     } else {
@@ -434,14 +435,41 @@ export default class Powr extends View {
         if (!this.modules().switchr) return;
         const where = {};
         for (const [address, row] of Object.entries(found)) {
-          if (row && row.main === false && row.account) where[address] = row.account;
+          if (row && row.account) where[address] = row.account;
         }
         if (!same(shared(WHERE), where)) setShared(WHERE, where);
         if (!same(shared(AGENTS), found)) setShared(AGENTS, found);
+        if (Object.values(found).some((row) => row?.kind === "claude" && row.state === "error")) {
+          this.rescue(cx);
+        }
       } catch {
         // The next tick tries again; a missing badge is the honest failure.
       } finally {
         this.asking = false;
+      }
+    });
+  }
+
+  /**
+   * An agent stopped with an error: if it was a used-up limit, Switchr moves
+   * it to an account with room left. Switchr acts on each refused turn once,
+   * so asking again on every tick is safe; one question is out at a time.
+   */
+  rescue(cx) {
+    if (this.rescuing) return;
+    this.rescuing = true;
+    cx.spawn(async () => {
+      try {
+        const r = await exec(SWITCHR, ["rescue", "--json"], { timeout: 120000 });
+        const results = r.code === 0 ? JSON.parse(r.stdout) : [];
+        for (const result of Array.isArray(results) ? results : []) {
+          notify({ title: "Switchr", body: String(result.message ?? ""),
+            level: result.ok ? "success" : "warning" });
+        }
+      } catch {
+        // The next tick asks again.
+      } finally {
+        this.rescuing = false;
       }
     });
   }
@@ -880,9 +908,13 @@ export default class Powr extends View {
       row.child(v_flex().flex_1().min_w(0)
         .child(h_flex().items_center().gap(6)
           .child(div().text_color(t.foreground).truncate().child(account.name))
-          .when(account.main === true, (el) => el.child(
-            div().text_size(11).text_color(t.dim).child("main"))))
+          .when(account.default === true, (el) => el.child(
+            div().text_size(11).text_color(t.dim).child("default"))))
         .child(div().text_size(12).text_color(t.dim).child(usageLine(account))));
+    }
+    if (account.default !== true && !account.pending) {
+      row.child(this.smallButton(t, `switchr-default-${key}`, "Make default",
+        (cx) => this.switchrCommand(["default", account.kind, account.name], "Could not make it the default.", cx)));
     }
     row.child(this.smallButton(t, `switchr-rename-${key}`, "Rename",
       (cx) => this.startEditing({ mode: "rename", kind: account.kind, name: account.name }, cx)));
@@ -896,8 +928,7 @@ export default class Powr extends View {
   renderSwitchrPage(t) {
     const line = (text) => div().text_size(12).text_color(t.dim).child(text);
     const page = v_flex().gap(4)
-      .child(line("Right press on an agent in the Agents list to move it to another account."))
-      .child(line("An agent on an account other than main shows that account's name."));
+      .child(line("Right press on an agent in the Agents list to move it to another account."));
     if (this.accounts === null) {
       return page.child(div().pt(10).text_size(12).text_color(t.dim)
         .child(this.accountsNote || "Checking…"));
@@ -989,7 +1020,7 @@ export default class Powr extends View {
     menu.child(div().px(6).pt(2).pb(4).text_size(11).text_color(t.dim)
       .child(`${(KIND_NAMES[agent.kind] ?? agent.kind).toUpperCase()} ACCOUNT`));
     if (this.menuAccounts === null) return menu.child(note("Checking…"));
-    const busy = !["idle", "done"].includes(agent.state);
+    const busy = !["idle", "done", "error"].includes(agent.state);
     for (const account of this.menuAccounts.filter((a) => a.kind === agent.kind)) {
       const current = account.name === agent.account;
       const loggedIn = !account.pending && account.usage?.state !== "logged-out";

@@ -210,13 +210,32 @@ class MoveTests(unittest.TestCase):
                 self.assertFalse(self.run_move(hc, accounts, name=name)["ok"], name)
                 self.assertEqual(hc.sends(), [], name)
 
-    def test_move_refuses_without_session(self):
+    def test_move_without_session_starts_fresh(self):
         with sandbox():
             self.confirm_bonus()
-            hc = FakeHc([terminal(100)])
-            result = self.run_move(hc, {}, session=None)
-            self.assertFalse(result["ok"])
-            self.assertEqual(hc.sends(), [])
+            argv = ["claude", "--model", "x", "fix X"]
+            hc = FakeHc([
+                terminal(100, argv=argv),
+                terminal(50, name="bash", argv=["/usr/bin/bash"]),
+                terminal(200, argv=["claude"]),
+            ])
+            result = self.run_move(hc, {200: "bonus"}, session=None, sessions={200: "other"})
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["message"], "Moved to bonus.")
+            launch = shlex.join([SCRIPT, "run", "claude", "bonus", "--", "--model", "x"])
+            self.assertEqual(hc.sends(), [["send", "t1", "/exit"], ["send", "t1", launch]])
+
+    def test_move_takes_an_agent_stopped_by_an_error(self):
+        with sandbox():
+            self.confirm_bonus()
+            hc = FakeHc([
+                terminal(100, state="error"),
+                terminal(50, name="bash", argv=["/usr/bin/bash"]),
+                terminal(200, argv=["claude"]),
+            ])
+            result = self.run_move(hc, {200: "bonus"})
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["message"], "Moved to bonus, same conversation.")
 
     def test_move_gives_up_after_quit_timeout(self):
         with sandbox():
@@ -328,9 +347,109 @@ class WhichTests(unittest.TestCase):
         with sandbox(), patch.object(switchr, "_hc", hc), \
                 patch.object(switchr, "account_of", side_effect=lambda pid, kind=None: accounts[pid]):
             self.assertEqual(switchr.which(), {
-                "t1": {"kind": "claude", "account": "main", "main": True, "state": "idle"},
-                "t3": {"kind": "codex", "account": "bonus", "main": False, "state": "working"}})
+                "t1": {"kind": "claude", "account": "main", "main": True, "state": "idle", "message": None},
+                "t3": {"kind": "codex", "account": "bonus", "main": False, "state": "working", "message": None}})
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def transcript(root, records, session=SESSION):
+    project = root / "home" / ".claude" / "projects" / "-w"
+    project.mkdir(parents=True, exist_ok=True)
+    (project / f"{session}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+
+
+LIMITED = {"type": "assistant", "uuid": "u-limit", "apiError": "usage_limit_reached",
+           "error": "rate_limit", "isApiErrorMessage": True}
+
+
+class LimitTests(unittest.TestCase):
+    def test_limit_hit_reads_the_last_turn(self):
+        with sandbox() as root:
+            self.assertIsNone(switchr.limit_hit(SESSION))  # no transcript
+            asked = {"type": "user", "uuid": "u1"}
+            transcript(root, [asked, LIMITED, {"type": "system", "uuid": "s"}])
+            self.assertEqual(switchr.limit_hit(SESSION), "u-limit")
+            transcript(root, [asked, LIMITED, {"type": "user", "uuid": "u2"}])
+            self.assertIsNone(switchr.limit_hit(SESSION))  # answered since
+            transcript(root, [asked, {"type": "assistant", "uuid": "a", "apiError": "overloaded"}])
+            self.assertIsNone(switchr.limit_hit(SESSION))
+
+    def rescue(self, root, usages, state="error", message=None):
+        moves = []
+        with patch.object(switchr, "which",
+                          return_value={"t1": {"kind": "claude", "account": "main", "main": True,
+                                               "state": state, "message": message}}), \
+                patch.object(switchr, "_hc", return_value={"foreground": {"pid": 100}}), \
+                patch.object(switchr, "_claude_session_id", return_value=SESSION), \
+                patch.object(switchr, "usage", side_effect=lambda kind, name: usages[name]), \
+                patch.object(switchr, "move", side_effect=lambda address, name: (
+                    moves.append((address, name)) or {"ok": True, "message": f"Moved to {name}."})):
+            return switchr.rescue(), moves
+
+    def accounts(self, *names):
+        for name in names:
+            switchr.add("claude", name)
+        reg = switchr.load_registry()
+        for entry in reg["accounts"]:
+            entry.pop("pending", None)
+        switchr.save_registry(reg)
+
+    def test_rescue_moves_once_to_the_default_with_room(self):
+        def u(session, week):
+            return {"state": "ok", "session": session, "week": week, "resets": None}
+        with sandbox() as root:
+            self.accounts("a", "b")
+            transcript(root, [LIMITED])
+            usages = {"main": u(100, 100), "a": u(10, 50), "b": u(90, 20)}
+            switchr.set_default("claude", "b")
+            results, moves = self.rescue(root, usages)
+            self.assertEqual(moves, [("t1", "b")])
+            self.assertEqual(results, [{"address": "t1", "ok": True,
+                                        "message": "main has used up its limit. Moved to b."}])
+            self.assertEqual(self.rescue(root, usages), ([], []))  # acted on once
+
+    def test_rescue_takes_the_most_room_when_the_default_has_none(self):
+        def u(session, week):
+            return {"state": "ok", "session": session, "week": week, "resets": None}
+        with sandbox() as root:
+            self.accounts("a", "b")
+            transcript(root, [LIMITED])
+            usages = {"main": u(100, 100), "a": u(10, 50), "b": u(90, 20)}
+            _results, moves = self.rescue(root, usages)  # default is main: no room
+            self.assertEqual(moves, [("t1", "a")])
+
+    def test_rescue_says_so_when_nothing_has_room(self):
+        with sandbox() as root:
+            self.accounts("a")
+            transcript(root, [LIMITED])
+            usages = {"main": {"state": "ok", "session": 100, "week": 100},
+                      "a": {"state": "unknown", "session": None, "week": None}}
+            results, moves = self.rescue(root, usages)
+            self.assertEqual(moves, [])
+            self.assertFalse(results[0]["ok"])
+            self.assertIn("No other Claude account has any left", results[0]["message"])
+
+    def test_rescue_leaves_other_errors_and_states(self):
+        with sandbox() as root:
+            self.accounts("a")
+            usages = {"main": {"state": "ok", "session": 1, "week": 1},
+                      "a": {"state": "ok", "session": 1, "week": 1}}
+            transcript(root, [{"type": "assistant", "uuid": "x", "apiError": "overloaded"}])
+            self.assertEqual(self.rescue(root, usages), ([], []))
+            transcript(root, [LIMITED])
+            self.assertEqual(self.rescue(root, usages, state="idle"), ([], []))
+
+    def test_rescue_trusts_the_agents_own_report(self):
+        with sandbox() as root:
+            self.accounts("a")
+            usages = {"main": {"state": "ok", "session": 100, "week": 100},
+                      "a": {"state": "ok", "session": 1, "week": 1}}
+            transcript(root, [{"type": "assistant", "uuid": "x"}])  # last turn went fine
+            report = "You've hit your weekly limit · resets 5pm (Europe/Warsaw)"
+            _results, moves = self.rescue(root, usages, message=report)
+            self.assertEqual(moves, [("t1", "a")])
+            self.assertEqual(self.rescue(root, usages, message=report)[1], [])  # once
+            self.assertEqual(self.rescue(root, usages, message="Overloaded")[1], [])

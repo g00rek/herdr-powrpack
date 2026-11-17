@@ -121,8 +121,9 @@ Switching Spacr off puts Herdr's own list back.
 ### Switchr
 
 Run each Claude Code or Codex agent on the account you choose, side by side,
-without logging out of anything. Your usual login is the **main** account and is
-never touched; every other account is one you add.
+without logging out of anything. All accounts are equal: the one you were
+already logged in with (Switchr calls it `main` until you rename it) is never
+touched, and every other account is one you add.
 
 Switchr is off after installing: switch it on in the Powr panel. Switching it
 on swaps Herdr's Agents list for a copy that carries the badge and the
@@ -131,16 +132,24 @@ right-press menu; switching it off puts Herdr's own list back.
 - **Adding an account.** On the Switchr page, press **Add Claude account** or
   **Add Codex account** and type a short name. A tab opens where you log in
   once. The same login can't be added twice.
-- **Starting an agent on it.** The account appears in Herdr's new-agent menu as
+- **The default account.** New agents start on it: the plain **Claude Code** and
+  **Codex** entries of Herdr's new-agent menu run on it. Pick it with **Make
+  default** on the Switchr page. Every other account is in the same menu as
   `Claude · <name>` or `Codex · <name>`.
 - **Limits.** The page shows how much of each account's five-hour and weekly
   limit is used.
 - **Moving a running agent.** Right-press it in the Agents list and pick another
   account. The agent is closed and its conversation is resumed on the new
-  account in the same terminal. This works only once the agent has finished
-  its turn; a busy agent says so and stays where it is.
-- **The badge.** Only agents on a non-main account get a badge: the account's
-  name in its row of the Agents list. An agent on main shows none.
+  account in the same terminal. An agent that has said nothing yet starts
+  again, empty, on the new account. This works once the agent has finished
+  its turn or stopped on an error; a busy agent says so and stays where it is.
+- **A used-up limit.** When a Claude agent's turn is refused because its
+  account's limit is used up, Switchr moves it on its own, same conversation,
+  to the default account if that has room left, else to the account with the
+  most left, and says so. Send a message to carry on. Codex agents are not
+  moved on their own yet.
+- **The badge.** Every agent shows its account's name in its row of the Agents
+  list.
 
 Every extra account shares instructions, memory, skills, settings and history
 with the main one; only the login is its own. So a moved agent keeps all of it.

@@ -1,7 +1,7 @@
 import { shared, openOverlay } from "herdr";
 
-// The account an agent runs on, for the badge in the Agents list. Agents on the
-// main account have no entry, so they show nothing.
+// The account an agent runs on, for the badge in the Agents list. Every agent
+// shows its account; none is treated as the usual one.
 export function switchrBadge(agent) {
 	const where = shared("switchr.where");
 	const name = where && where[agent.address];
