@@ -207,6 +207,7 @@ export default class PowrSpaces extends View {
 		this.name = InputState.new({ placeholder: "Folder" });
 		this.editing = null; // the folder being renamed
 		this.pressed = null; // the project under a held button, maybe a drag
+		this.lifted = null; // the folder under a held button, maybe a drag
 		this.over = null; // { kind: "space" | "folder" | "out", id }
 		this.dropped = false; // swallow the click that ends a drag
 		this.name.on("submit", (_event, cx) => this.commitName(cx));
@@ -561,6 +562,10 @@ export default class PowrSpaces extends View {
 	 * Herdr's own order, which is what the rest of the app reads.
 	 */
 	drop(cx) {
+		if (this.lifted) {
+			this.dropFolder(cx);
+			return;
+		}
 		const dragged = this.pressed;
 		const target = this.over;
 		this.pressed = null;
@@ -603,9 +608,36 @@ export default class PowrSpaces extends View {
 		cx.notify();
 	}
 
+	/**
+	 * Finish a folder's drag. Dropped on another folder it takes that one's
+	 * place, the way a project dropped on a project does; anywhere else it
+	 * stays where it was.
+	 */
+	dropFolder(cx) {
+		const dragged = this.lifted;
+		const target = this.over;
+		this.lifted = null;
+		this.over = null;
+		if (!target) {
+			cx.notify();
+			return;
+		}
+		this.dropped = true;
+		const { list, of } = this.folders();
+		const from = list.findIndex((f) => f.id === dragged);
+		const to = list.findIndex((f) => f.id === target.id);
+		if (target.kind === "folder" && from >= 0 && to >= 0 && from !== to) {
+			const next = [...list];
+			const [moving] = next.splice(from, 1);
+			next.splice(to, 0, moving);
+			this.save({ list: next, of });
+		}
+		cx.notify();
+	}
+
 	/** Mark what the pointer is over, but only while something is being dragged. */
 	hover(kind, id, cx) {
-		if (!this.pressed) return;
+		if (!this.pressed && !this.lifted) return;
 		if (this.over && this.over.kind === kind && this.over.id === id) return;
 		this.over = { kind, id };
 		cx.notify();
@@ -652,7 +684,7 @@ export default class PowrSpaces extends View {
 		// A loose project stands at the top of the tree beside the folders, so
 		// its glyph lines up with theirs, past the space their arrows take.
 		const top = !from && !folder;
-		const landing = this.over && this.over.kind === "space" && this.over.id === space.id;
+		const landing = !this.lifted && this.over && this.over.kind === "space" && this.over.id === space.id;
 		const lifted = this.pressed === space.id;
 		return h_flex()
 			.id(`powr-space-${space.id}`)
@@ -807,7 +839,10 @@ export default class PowrSpaces extends View {
 
 	folderHead(t, folder, inside) {
 		const tint = folder.color ? paint(folder.color) : t.dim;
-		const landing = this.over && this.over.kind === "folder" && this.over.id === folder.id;
+		const over = this.over && this.over.kind === "folder" && this.over.id === folder.id;
+		// A project lands in the folder; a folder lands in its place.
+		const landing = over && !this.lifted;
+		const placing = over && this.lifted && this.lifted !== folder.id;
 		const head = h_flex()
 			.id(`powr-folder-${folder.id}`)
 			.items_center()
@@ -817,7 +852,13 @@ export default class PowrSpaces extends View {
 			.rounded(6)
 			.cursor_pointer()
 			.when(landing, (el) => el.bg(t.hover).border_1().border_color(t.accent))
+			.when(placing, (el) => el.border_t_2().border_color(t.accent))
+			.when(this.lifted === folder.id, (el) => el.text_color(t.dim))
 			.hover((s) => s.bg(t.hover))
+			.on_mouse_down("left", (_event, cx) => {
+				this.lifted = folder.id;
+				cx.notify();
+			})
 			.on_mouse_move((_event, cx) => this.hover("folder", folder.id, cx))
 			.on_mouse_up("left", (_event, cx) => this.drop(cx))
 			.on_click((_event, cx) => {
@@ -1163,7 +1204,7 @@ export default class PowrSpaces extends View {
 			// misses every row leaves the list as it was instead of leaving a
 			// project stuck to the pointer.
 			.on_mouse_up("left", (_event, cx) => {
-				if (this.pressed) this.drop(cx);
+				if (this.pressed || this.lifted) this.drop(cx);
 			})
 			// A press anywhere else finishes a name being typed into a new
 			// folder, the way clicking off a field finishes it everywhere.
